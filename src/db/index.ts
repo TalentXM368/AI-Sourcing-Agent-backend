@@ -3,7 +3,8 @@ import { Pool } from 'pg'
 import { config } from 'dotenv'
 import { resolve } from 'path'
 
-config({ path: resolve(__dirname, '../../.env') })
+// Load .env in local dev (on Vercel, env vars come from the dashboard)
+try { config({ path: resolve(__dirname, '../../.env') }) } catch {}
 
 // ─── Database Types (mirrors Prisma schema) ──────────────────
 
