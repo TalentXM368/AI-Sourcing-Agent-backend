@@ -1,0 +1,280 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-06-15T07:21:03.880077Z",
+    "total_jds": 2,
+    "total_resumes": 2,
+    "top_k": 10,
+    "semantic_retrieval_k": 100,
+    "llm_rerank_top_n": 50,
+    "scoring_mode": "hybrid",
+    "use_reranking": true,
+    "llm_reranking_enabled": true,
+    "retrieval_backend": "pinecone",
+    "client_context_present": false
+  },
+  "matches": [
+    {
+      "jd_file": "08a00fd3-636a-4535-8ac0-07c133acd4d6.pdf",
+      "jd_title": "Artificial Intelligence Engineer Job Description",
+      "jd_company": null,
+      "jd_required_skills": [
+        "java",
+        "python"
+      ],
+      "jd_required_experience": null,
+      "total_candidates": 2,
+      "semantic_retrieval_candidates": 2,
+      "scoring_mode": "hybrid",
+      "layers": {
+        "layer1_semantic_retrieval": {
+          "enabled": true,
+          "backend": "pinecone",
+          "retrieval_k": 2
+        },
+        "layer2_feature_scoring": {
+          "enabled": true,
+          "features": [
+            "skills",
+            "experience",
+            "projects",
+            "role",
+            "text"
+          ]
+        },
+        "layer3_llm_reranking": {
+          "enabled": true,
+          "model": "gpt-4o-mini",
+          "rerank_top_n": 2
+        }
+      },
+      "top_matches": [
+        {
+          "resume_idx": 0,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\prem_d_mote_resume.pdf",
+          "resume_name": "Prem Mote",
+          "score": 47.61,
+          "score_raw": 0.4761,
+          "jd_score": 20.0,
+          "jd_score_raw": 0.2,
+          "score_breakdown": {
+            "semantic_retrieval_similarity": 30.91,
+            "combined_skill_score": 30.0,
+            "combined_skill_raw": 50.0,
+            "combined_skill_formula": "0.75*exact + 0.25*semantic (then mapped to bands)",
+            "jd_match_score": 20.0,
+            "overall_match_score": 29.02,
+            "client_fit_score": 65.1,
+            "client_fit_signals": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "ai_fit_score": 60.0
+          },
+          "matched_skills": {
+            "exact": [
+              "python"
+            ],
+            "semantic": [],
+            "semantic_mappings": []
+          },
+          "missing_skills": [
+            "java"
+          ],
+          "resume_experience_years": null,
+          "retrieval_rank": 1,
+          "rejected": false,
+          "llm_rerank_reason": "Candidate has Python skills but lacks Java, which is essential for the role.",
+          "confidence": 37.27,
+          "confidence_level": "Low",
+          "status": "Weak Fit"
+        },
+        {
+          "resume_idx": 1,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\Shubham_sonawne Resume 2026.pdf",
+          "resume_name": "SHUBHAM SONAWANE",
+          "score": 22.81,
+          "score_raw": 0.2281,
+          "jd_score": 22.0,
+          "jd_score_raw": 0.22,
+          "score_breakdown": {
+            "semantic_retrieval_similarity": 25.53,
+            "combined_skill_score": 3.0,
+            "combined_skill_raw": 0.0,
+            "combined_skill_formula": "0.75*exact + 0.25*semantic (then mapped to bands)",
+            "jd_match_score": 22.0,
+            "overall_match_score": 27.03,
+            "client_fit_score": 47.16799999999999,
+            "client_fit_signals": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "ai_fit_score": 20.0
+          },
+          "matched_skills": {
+            "exact": [],
+            "semantic": [],
+            "semantic_mappings": []
+          },
+          "missing_skills": [
+            "java",
+            "python"
+          ],
+          "resume_experience_years": 0.0,
+          "retrieval_rank": 2,
+          "rejected": false,
+          "llm_rerank_reason": "Candidate lacks both required programming skills and relevant experience.",
+          "confidence": 18.38,
+          "confidence_level": "Low",
+          "status": "Not Fit"
+        }
+      ]
+    },
+    {
+      "jd_file": "j1.pdf",
+      "jd_title": "AI/ML Engineer for Telecom Analytics",
+      "jd_company": null,
+      "jd_required_skills": [
+        "numpy",
+        "python",
+        "pytorch",
+        "rest",
+        "tensorflow"
+      ],
+      "jd_required_experience": 5,
+      "total_candidates": 2,
+      "semantic_retrieval_candidates": 2,
+      "scoring_mode": "hybrid",
+      "layers": {
+        "layer1_semantic_retrieval": {
+          "enabled": true,
+          "backend": "pinecone",
+          "retrieval_k": 2
+        },
+        "layer2_feature_scoring": {
+          "enabled": true,
+          "features": [
+            "skills",
+            "experience",
+            "projects",
+            "role",
+            "text"
+          ]
+        },
+        "layer3_llm_reranking": {
+          "enabled": true,
+          "model": "gpt-4o-mini",
+          "rerank_top_n": 2
+        }
+      },
+      "top_matches": [
+        {
+          "resume_idx": 0,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\prem_d_mote_resume.pdf",
+          "resume_name": "Prem Mote",
+          "score": 47.42,
+          "score_raw": 0.4742,
+          "jd_score": 20.0,
+          "jd_score_raw": 0.2,
+          "score_breakdown": {
+            "semantic_retrieval_similarity": 39.97,
+            "combined_skill_score": 50.0,
+            "combined_skill_raw": 50.0,
+            "combined_skill_formula": "0.75*exact + 0.25*semantic (then mapped to bands)",
+            "jd_match_score": 20.0,
+            "overall_match_score": 28.54,
+            "client_fit_score": 62.699999999999996,
+            "client_fit_signals": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "experience_match": "Unknown",
+            "ai_fit_score": 60.0
+          },
+          "matched_skills": {
+            "exact": [
+              "python",
+              "tensorflow"
+            ],
+            "semantic": [
+              "numpy",
+              "pytorch"
+            ],
+            "semantic_mappings": [
+              {
+                "jd_skill": "numpy",
+                "resume_skill": "python",
+                "similarity": 0.9
+              },
+              {
+                "jd_skill": "pytorch",
+                "resume_skill": "deep learning",
+                "similarity": 0.9
+              }
+            ]
+          },
+          "missing_skills": [
+            "rest"
+          ],
+          "resume_experience_years": null,
+          "retrieval_rank": 1,
+          "rejected": false,
+          "llm_rerank_reason": "Candidate has some relevant skills and experience but lacks complete required experience and one key skill.",
+          "confidence": 51.27,
+          "confidence_level": "Medium",
+          "status": "Weak Fit"
+        },
+        {
+          "resume_idx": 1,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\Shubham_sonawne Resume 2026.pdf",
+          "resume_name": "SHUBHAM SONAWANE",
+          "score": 16.74,
+          "score_raw": 0.1674,
+          "jd_score": 22.0,
+          "jd_score_raw": 0.22,
+          "score_breakdown": {
+            "semantic_retrieval_similarity": 16.16,
+            "combined_skill_score": 3.0,
+            "combined_skill_raw": 0.0,
+            "combined_skill_formula": "0.75*exact + 0.25*semantic (then mapped to bands)",
+            "jd_match_score": 22.0,
+            "overall_match_score": 26.85,
+            "client_fit_score": 46.24999999999999,
+            "client_fit_signals": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "experience_match": "Unknown",
+            "ai_fit_score": 10.0
+          },
+          "matched_skills": {
+            "exact": [],
+            "semantic": [],
+            "semantic_mappings": []
+          },
+          "missing_skills": [
+            "numpy",
+            "python",
+            "pytorch",
+            "rest",
+            "tensorflow"
+          ],
+          "resume_experience_years": 0.0,
+          "retrieval_rank": 2,
+          "rejected": false,
+          "llm_rerank_reason": "Candidate lacks all required skills and experience.",
+          "confidence": 16.72,
+          "confidence_level": "Low",
+          "status": "Not Fit"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "total_files": 2,
+  "successful": 2,
+  "failed": 0,
+  "results": [
+    {
+      "source_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\prem_d_mote_resume.pdf",
+      "status": "success",
+      "data": {
+        "full_name": "Prem Mote",
+        "email": "moteprem4@gmail.com",
+        "phone": "+919529984098",
+        "linkedin_url": null,
+        "github_url": "https://github.com/moteprem4-web",
+        "skills": [
+          "artificial intelligence",
+          "deep learning",
+          "django",
+          "fastapi",
+          "generative ai",
+          "git",
+          "large language models",
+          "machine learning",
+          "natural language processing",
+          "python",
+          "sql",
+          "tensorflow"
+        ],
+        "projects": [
+          {
+            "title": "MarketResearch Agent (Multi-Agent AI System)Link Jan '26 — Present",
+            "description": "MarketResearch Agent (Multi-Agent AI System)Link Jan '26 — Present",
+            "technologies": [
+              "artificial intelligence"
+            ],
+            "raw_text": "MarketResearch Agent (Multi-Agent AI System)Link Jan '26 — Present"
+          },
+          {
+            "title": "Pune Built a multi-agent market research system using CrewAI, coordinating 5 spe",
+            "description": "Pune Built a multi-agent market research system using CrewAI, coordinating 5 specialized agents (market research, competitive intelligence, strategy, market sizing, report synthesis) for end-to-end business analysis Implemented task-based agent orchestration with parallel execution and static + dynamic web scraping using Selenium and HTML parsing to collect real-time market and competitor data Automated generation of actionable market intelligence reports (TAM/SAM/SOM, competitive landscape, growth trends, go-to-market strategy) to enable startup and investment decision-making SocialFlow AILink Dec '25 — Jan '26 Pune, India Multi-Agent GenAI Content Automation Platform Reduced content creation time by ~70% by building a multi- agent LangGraph workflow for parallel LinkedIn, Twitter, and WhatsApp post generation Improved throughput by 3× using stateful agent orchestration, with HITL approval via Streamlit for review and publishing Developed an end-to-end LLM pipeline using Hugging Face Inference APIs with <3s latency, integrating Langsmith for request tracing, debugging, and performance monitoring",
+            "technologies": [],
+            "raw_text": "Pune Built a multi-agent market research system using CrewAI, coordinating 5 specialized agents (market research, competitive intelligence, strategy, market sizing, report synthesis) for end-to-end business analysis Implemented task-based agent orchestration with parallel execution and static + dynamic web scraping using Selenium and HTML parsing to collect real-time market and competitor data Automated generation of actionable market intelligence reports (TAM/SAM/SOM, competitive landscape, growth trends, go-to-market strategy) to enable startup and investment decision-making SocialFlow AILink Dec '25 — Jan '26 Pune, India Multi-Agent GenAI Content Automation Platform Reduced content creation time by ~70% by building a multi- agent LangGraph workflow for parallel LinkedIn, Twitter, and WhatsApp post generation Improved throughput by 3× using stateful agent orchestration, with HITL approval via Streamlit for review and publishing Developed an end-to-end LLM pipeline using Hugging Face Inference APIs with <3s latency, integrating Langsmith for request tracing, debugging, and performance monitoring"
+          }
+        ],
+        "total_experience_years": null,
+        "education": "AI & DS in Bachelor of Engineering, Zeal College of Engineering & Research Narhe,Pune Aug '24 — Present",
+        "current_role": null
+      },
+      "error": null,
+      "parse_method": "local"
+    },
+    {
+      "source_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\Shubham_sonawne Resume 2026.pdf",
+      "status": "success",
+      "data": {
+        "full_name": "SHUBHAM SONAWANE",
+        "email": "shubhamp9307sonavane@gmail.com",
+        "phone": "+919307003527",
+        "linkedin_url": null,
+        "github_url": null,
+        "skills": [
+          "artificial intelligence",
+          "data science",
+          "data analysis",
+          "data visualization",
+          "power bi",
+          "communication",
+          "teamwork",
+          "adaptability",
+          "problem solving",
+          "time management",
+          "organizational skills"
+        ],
+        "projects": [],
+        "total_experience_years": 0.0,
+        "education": "Bachelor of Technology - AIDS, Zeal College of Engineering and Research, Narhe, Pune, Maharashtra, 08-2024 – Present",
+        "current_role": "Intern – Data Analyst"
+      },
+      "error": null,
+      "parse_method": "local+llm"
+    }
+  ]
+}

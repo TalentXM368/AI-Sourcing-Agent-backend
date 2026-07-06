@@ -1,0 +1,154 @@
+{
+  "merged_context": {
+    "client_name": "CLIENT_ID CLT_1023",
+    "client_id": null,
+    "culture": {
+      "type": [
+        "scale_up"
+      ],
+      "work_style": [
+        "growth-oriented",
+        "structured",
+        "collaborative"
+      ],
+      "company_size": "",
+      "industry": "fintech"
+    },
+    "hiring_preferences": {
+      "preferred_background": [
+        "startup",
+        "scale-up",
+        "growth"
+      ],
+      "experience_level": "mid-to-senior",
+      "remote_policy": "unknown"
+    },
+    "role_context": {
+      "industry": "fintech",
+      "domain_keywords": [
+        "fintech",
+        "ai_ml"
+      ],
+      "tech_stack": [
+        "api",
+        "aws",
+        "fintech",
+        "python",
+        "rest",
+        "sql"
+      ],
+      "team_size": null,
+      "hiring_manager": null
+    },
+    "urgency": {
+      "level": "medium",
+      "open_positions": 0,
+      "target_start_date": null
+    },
+    "historical_patterns": {
+      "avg_experience": 5.0,
+      "common_skills": [
+        "api",
+        "aws",
+        "fintech",
+        "python",
+        "rest",
+        "sql"
+      ],
+      "typical_education": "Master's",
+      "past_hire_background": [
+        "scale_up"
+      ],
+      "successful_candidate_traits": []
+    },
+    "source": "zoho_crm",
+    "_source_files": [
+      "CLIENT_ID CLT_1023.txt"
+    ]
+  },
+  "parsed_sources": [
+    {
+      "file_name": "CLIENT_ID CLT_1023.txt",
+      "file_path": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\client_data\\CLIENT_ID CLT_1023.txt",
+      "status": "parsed",
+      "parsed_context": {
+        "client_name": "CLIENT_ID CLT_1023",
+        "client_id": null,
+        "culture": {
+          "type": [
+            "scale_up"
+          ],
+          "work_style": [
+            "growth-oriented",
+            "structured",
+            "collaborative"
+          ],
+          "company_size": "",
+          "industry": "fintech"
+        },
+        "hiring_preferences": {
+          "preferred_background": [
+            "startup",
+            "scale-up",
+            "growth"
+          ],
+          "experience_level": "mid-to-senior",
+          "remote_policy": "unknown"
+        },
+        "role_context": {
+          "industry": "fintech",
+          "domain_keywords": [
+            "fintech",
+            "ai_ml"
+          ],
+          "tech_stack": [
+            "api",
+            "aws",
+            "fintech",
+            "python",
+            "rest",
+            "sql"
+          ],
+          "team_size": null,
+          "hiring_manager": null
+        },
+        "urgency": {
+          "level": "medium",
+          "open_positions": 0,
+          "target_start_date": null
+        },
+        "historical_patterns": {
+          "avg_experience": 5.0,
+          "common_skills": [
+            "api",
+            "aws",
+            "fintech",
+            "python",
+            "rest",
+            "sql"
+          ],
+          "typical_education": "Master's",
+          "past_hire_background": [
+            "scale_up"
+          ],
+          "successful_candidate_traits": []
+        },
+        "source": "zoho_crm",
+        "_source_files": [
+          "CLIENT_ID CLT_1023.txt"
+        ]
+      }
+    }
+  ],
+  "source_files": [
+    "CLIENT_ID CLT_1023.txt"
+  ],
+  "quality_summary": {
+    "source_file_count": 1,
+    "parsed_source_count": 1,
+    "skipped_source_count": 0,
+    "has_common_skills": true,
+    "has_industry": true,
+    "has_preferences": true
+  }
+}

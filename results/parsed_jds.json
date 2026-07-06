@@ -1,0 +1,37 @@
+{
+  "total_files": 2,
+  "parse_type": "job_descriptions",
+  "results": [
+    {
+      "file_name": "08a00fd3-636a-4535-8ac0-07c133acd4d6.pdf",
+      "file_path": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\jd\\08a00fd3-636a-4535-8ac0-07c133acd4d6.pdf",
+      "raw_text": "Artificial Intelligence Engineer Job Description \n \nThe Job Overview \nWe are seeking a dedicated artificial intelligence engineer to join our growing company. \nYou will work as part of a diverse team of software engineers, data scientists, and machine \nlearning (ML) experts to develop new models and algorithms to apply artificial intelligence \nto solve real-world problems and change the future. \n  \nAs an artificial intelligence engineer, you will be expected to have a keen interest in \nartificial intelligence, machine learning, and staying current with the latest developments \nin a rapidly changing field. Your duties will include collecting and analyzing data sets to \nidentify patterns and develop predictive algorithmic models. \n  \nResponsibilities \n  \nBelow are some of the responsibilities an artificial intelligence, machine learning engineer \nis expected to assume in their position:  \n  \nDesign and develop AI models to meet project requirements \nConvert AI/ML models into APIs that other developers can use \nPerform statistical analysis on big data sets \nManage project infrastructure and the development of AI models and projects \nWork with other machine learning engineers, data engineers, and AI engineers to develop \nmachine learning models \n \nJob Qualifications and Skill Sets \n  \nBelow are the qualifications expected of an artificial intelligence engineer:  \nBachelor’s degree or several years of experience in computer science, data science, \nsoftware development, or another related field; a master’s degree is recommended \nSolid understanding of common programming languages used in AI, such as Python, Java, \nC++, and R \nAdvanced knowledge of statistical and algorithmic models as well as of fundamental \nmathematical concepts, such as linear algebra and probability \nExperience working with large data sets and writing efficient code capable of processing \nlarge data streams at speed \nFamiliarity with deep learning and machine learning algorithms and the use of popular \nAI/ML frameworks \nExcellent communication skills",
+      "title": "Artificial Intelligence Engineer Job Description",
+      "company": null,
+      "job_description": "Artificial Intelligence Engineer Job Description \n \nThe Job Overview \nWe are seeking a dedicated artificial intelligence engineer to join our growing company. \nYou will work as part of a diverse team of software engineers, data scientists, and machine \nlearning (ML) experts to develop new models and algorithms to apply artificial intelligence \nto solve real-world problems and change the future. \n  \nAs an artificial intelligence engineer, you will be expected to have a keen interest in \nartificia",
+      "required_skills": [
+        "java",
+        "python"
+      ],
+      "required_experience_years": null,
+      "status": "success"
+    },
+    {
+      "file_name": "j1.pdf",
+      "file_path": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\jd\\j1.pdf",
+      "raw_text": "Job Description   \nRole: AI/ML Engineer for Telecom Analytics \nDesignation: ITA & Above,        JOB LOCATION: Hyderabad/Chennai,    ROLE TENURE :  Long Term    \nOur Team \nThe team is looking for AI/ML Developers with solid background in Machine learning and Deep \nLearning. The developer will be expected to work as an individual contributor with the guidance from \ndomain experts and should have innovative thinking ability. The engineer should have experience \nworking on large sc ale Machine learning/deep learning projects with large scale of data preferably in \nTelecom domain. He/she should have sound understanding of feature engineering, model selection, \ntraining, validation and test metrics. \nRESPONSIBILITIES: \n● Develop algorithms and early learning software for customers. \n● Create documentation and training materials. \n● Build, Train and Test multiple machine learning models. \n● Hyperparameter tuning of trained models to achieve best possible results. \n● Individual Contributor \n● Interact with a cross-functional team of data scientists, engineers, and domain experts to \ndetermine requirements and functionality. \n● Work with on-shore and off-shore engineering teams to support your software development \nefforts. \nTECHNICAL COMPETENCIES & EXPERIENCE: \n● Overall 5+ years of experience. \n● 3+ years of experience in AI/ ML/ NLP. \n● Experience in Telecom domain is good to have. \n● Strong experience of Deep Learning frameworks – TensorFlow, Keras, PyTorch. \n● Strong programming skills in python and experience of Ski-Learn/NumPy libraries. (C++ is \nAdd on) \n● Experience in data mining, Text Mining, working and creating data architectures \n● Experience in cloud services e.g. PaaS and SaaS, Rest API, serverless functions \n● Understanding of Compute Engines, VM, Containers is nice to have \n● Problem-solving aptitude \n● Understanding and experience with leading supervised and unsupervised machine learning \nmethods such as Regression, Neural Networks, Deep Learning, KNN, Naive Bayes, SVM, \nDecision Trees, Random Forest, Gradient Boosting, Ensemble methods, text mining. \n● Experience in Kaggle/MICCA or any online data science competitions \n● IT Skills: MS office tools (Word, Excel, PowerPoint) \nEDUCATION: \nB.Tech./ B.E./ M.E./ M.Tech./M.S. in Computer Science, Information Technology, ECE, EE, EEE, \nLANGUAGE & SKILLS: \n● Proficient in English language \n● Good written and Verbal communication skill \nWrite to Ramesh.Kumar@zureetelecom.com",
+      "title": "AI/ML Engineer for Telecom Analytics",
+      "company": null,
+      "job_description": "Job Description   \nRole: AI/ML Engineer for Telecom Analytics \nDesignation: ITA & Above,        JOB LOCATION: Hyderabad/Chennai,    ROLE TENURE :  Long Term    \nOur Team \nThe team is looking for AI/ML Developers with solid background in Machine learning and Deep \nLearning. The developer will be expected to work as an individual contributor with the guidance from \ndomain experts and should have innovative thinking ability. The engineer should have experience \nworking on large sc ale Machine learn",
+      "required_skills": [
+        "numpy",
+        "python",
+        "pytorch",
+        "rest",
+        "tensorflow"
+      ],
+      "required_experience_years": 5,
+      "status": "success"
+    }
+  ]
+}

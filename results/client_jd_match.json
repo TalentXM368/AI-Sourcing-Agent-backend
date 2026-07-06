@@ -1,0 +1,315 @@
+{
+  "run_metadata": {
+    "timestamp": "2026-06-15T07:21:03.883073Z",
+    "total_jds": 2,
+    "total_resumes": 2,
+    "top_k": 10,
+    "client_id": null,
+    "client_name": "CLIENT_ID CLT_1023",
+    "scoring_mode": "hybrid",
+    "use_reranking": true
+  },
+  "matches": [
+    {
+      "jd_file": "08a00fd3-636a-4535-8ac0-07c133acd4d6.pdf",
+      "jd_title": "Artificial Intelligence Engineer Job Description",
+      "jd_company": null,
+      "jd_required_skills": [
+        "java",
+        "python"
+      ],
+      "jd_required_experience": null,
+      "total_candidates": 2,
+      "client_fit_matches": [
+        {
+          "resume_idx": 0,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\prem_d_mote_resume.pdf",
+          "resume_name": "Prem Mote",
+          "client_fit_score": 65.1,
+          "client_fit_explanation": {
+            "score": 65.1,
+            "reason": "Good fit for CLIENT_ID CLT_1023: matched skills, industry, background, experience",
+            "signals_used": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "fallback_used": [],
+            "components": {
+              "background_fit": {
+                "score": 92.0,
+                "details": "Candidate background startup matches preferred background",
+                "available": true,
+                "weight": 0.3,
+                "candidate_background": "startup",
+                "preferred_backgrounds": [
+                  "startup",
+                  "scale-up",
+                  "growth"
+                ]
+              },
+              "industry_fit": {
+                "score": 44.0,
+                "details": "Matched: keyword:ai_ml, Expected: fintech, Keywords: fintech, ai_ml",
+                "available": true,
+                "weight": 0.25,
+                "candidate_industry": "ai_ml",
+                "expected_industry": "fintech",
+                "matched_signals": [
+                  "keyword:ai_ml"
+                ]
+              },
+              "skill_fit": {
+                "score": 43.33333333333333,
+                "details": "Matched skills: python, sql, Expected: api, aws, fintech, python, rest, sql",
+                "available": true,
+                "weight": 0.3,
+                "matched_skills": [
+                  "python",
+                  "sql"
+                ],
+                "expected_skills": [
+                  "api",
+                  "aws",
+                  "fintech",
+                  "python",
+                  "rest",
+                  "sql"
+                ]
+              },
+              "experience_fit": {
+                "score": 90.0,
+                "details": "Candidate experience missing; level alignment used: mid vs mid",
+                "available": true,
+                "weight": 0.15
+              }
+            }
+          },
+          "confidence": 37.27,
+          "confidence_level": "Low",
+          "status": "Potential Fit"
+        },
+        {
+          "resume_idx": 1,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\Shubham_sonawne Resume 2026.pdf",
+          "resume_name": "SHUBHAM SONAWANE",
+          "client_fit_score": 47.16799999999999,
+          "client_fit_explanation": {
+            "score": 47.17,
+            "reason": "Moderate fit for CLIENT_ID CLT_1023: matched skills, industry, background, experience",
+            "signals_used": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "fallback_used": [],
+            "components": {
+              "background_fit": {
+                "score": 92.0,
+                "details": "Candidate background startup matches preferred background",
+                "available": true,
+                "weight": 0.3,
+                "candidate_background": "startup",
+                "preferred_backgrounds": [
+                  "startup",
+                  "scale-up",
+                  "growth"
+                ]
+              },
+              "industry_fit": {
+                "score": 44.0,
+                "details": "Matched: keyword:ai_ml, Expected: fintech, Keywords: fintech, ai_ml",
+                "available": true,
+                "weight": 0.25,
+                "candidate_industry": "ai_ml",
+                "expected_industry": "fintech",
+                "matched_signals": [
+                  "keyword:ai_ml"
+                ]
+              },
+              "skill_fit": {
+                "score": 0.0,
+                "details": "Matched skills: None, Expected: api, aws, fintech, python, rest, sql",
+                "available": true,
+                "weight": 0.3,
+                "matched_skills": [],
+                "expected_skills": [
+                  "api",
+                  "aws",
+                  "fintech",
+                  "python",
+                  "rest",
+                  "sql"
+                ]
+              },
+              "experience_fit": {
+                "score": 57.12,
+                "details": "Candidate: 0.0 years, Target: 5.0 years, Required level: mid",
+                "available": true,
+                "weight": 0.15
+              }
+            }
+          },
+          "confidence": 18.38,
+          "confidence_level": "Low",
+          "status": "Weak Fit"
+        }
+      ]
+    },
+    {
+      "jd_file": "j1.pdf",
+      "jd_title": "AI/ML Engineer for Telecom Analytics",
+      "jd_company": null,
+      "jd_required_skills": [
+        "numpy",
+        "python",
+        "pytorch",
+        "rest",
+        "tensorflow"
+      ],
+      "jd_required_experience": 5,
+      "total_candidates": 2,
+      "client_fit_matches": [
+        {
+          "resume_idx": 0,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\prem_d_mote_resume.pdf",
+          "resume_name": "Prem Mote",
+          "client_fit_score": 62.699999999999996,
+          "client_fit_explanation": {
+            "score": 62.7,
+            "reason": "Good fit for CLIENT_ID CLT_1023: matched skills, industry, background, experience",
+            "signals_used": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "fallback_used": [
+              "experience_level"
+            ],
+            "components": {
+              "background_fit": {
+                "score": 92.0,
+                "details": "Candidate background startup matches preferred background",
+                "available": true,
+                "weight": 0.3,
+                "candidate_background": "startup",
+                "preferred_backgrounds": [
+                  "startup",
+                  "scale-up",
+                  "growth"
+                ]
+              },
+              "industry_fit": {
+                "score": 44.0,
+                "details": "Matched: keyword:ai_ml, Expected: fintech, Keywords: fintech, ai_ml",
+                "available": true,
+                "weight": 0.25,
+                "candidate_industry": "ai_ml",
+                "expected_industry": "fintech",
+                "matched_signals": [
+                  "keyword:ai_ml"
+                ]
+              },
+              "skill_fit": {
+                "score": 43.33333333333333,
+                "details": "Matched skills: python, sql, Expected: api, aws, fintech, python, rest, sql",
+                "available": true,
+                "weight": 0.3,
+                "matched_skills": [
+                  "python",
+                  "sql"
+                ],
+                "expected_skills": [
+                  "api",
+                  "aws",
+                  "fintech",
+                  "python",
+                  "rest",
+                  "sql"
+                ]
+              },
+              "experience_fit": {
+                "score": 74.0,
+                "details": "Candidate experience missing; level alignment used: mid vs mid-to-senior",
+                "available": true,
+                "weight": 0.15
+              }
+            }
+          },
+          "confidence": 51.27,
+          "confidence_level": "Medium",
+          "status": "Potential Fit"
+        },
+        {
+          "resume_idx": 1,
+          "resume_file": "C:\\Users\\Rohan\\Desktop\\BlockTXM\\AI Sourcing Agent\\backend\\resumes\\Shubham_sonawne Resume 2026.pdf",
+          "resume_name": "SHUBHAM SONAWANE",
+          "client_fit_score": 46.24999999999999,
+          "client_fit_explanation": {
+            "score": 46.25,
+            "reason": "Moderate fit for CLIENT_ID CLT_1023: matched skills, industry, background, experience",
+            "signals_used": [
+              "background_fit",
+              "industry_fit",
+              "skill_fit",
+              "experience_fit"
+            ],
+            "fallback_used": [],
+            "components": {
+              "background_fit": {
+                "score": 92.0,
+                "details": "Candidate background startup matches preferred background",
+                "available": true,
+                "weight": 0.3,
+                "candidate_background": "startup",
+                "preferred_backgrounds": [
+                  "startup",
+                  "scale-up",
+                  "growth"
+                ]
+              },
+              "industry_fit": {
+                "score": 44.0,
+                "details": "Matched: keyword:ai_ml, Expected: fintech, Keywords: fintech, ai_ml",
+                "available": true,
+                "weight": 0.25,
+                "candidate_industry": "ai_ml",
+                "expected_industry": "fintech",
+                "matched_signals": [
+                  "keyword:ai_ml"
+                ]
+              },
+              "skill_fit": {
+                "score": 0.0,
+                "details": "Matched skills: None, Expected: api, aws, fintech, python, rest, sql",
+                "available": true,
+                "weight": 0.3,
+                "matched_skills": [],
+                "expected_skills": [
+                  "api",
+                  "aws",
+                  "fintech",
+                  "python",
+                  "rest",
+                  "sql"
+                ]
+              },
+              "experience_fit": {
+                "score": 51.0,
+                "details": "Candidate: 0.0 years, Target: 5.0 years, Required level: mid-to-senior",
+                "available": true,
+                "weight": 0.15
+              }
+            }
+          },
+          "confidence": 16.72,
+          "confidence_level": "Low",
+          "status": "Weak Fit"
+        }
+      ]
+    }
+  ]
+}

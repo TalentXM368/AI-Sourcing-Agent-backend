@@ -1,0 +1,44 @@
+CLIENT_ID: CLT_1023
+COMPANY_NAME: FinEdge Technologies
+
+--- ACCOUNT DETAILS ---
+Company Type: Startup
+Industry: FinTech
+Team Size: 50-100
+
+--- HIRING MANAGER PREFERENCES ---
+Preferred Background: Startup
+Avoid Background: Large Enterprise (optional)
+Education Bias: Medium
+Preferred Companies: Razorpay, PhonePe, small product startups
+
+--- ROLE CONTEXT ---
+Role: Backend Developer
+Domain Focus: Payments, Fraud Detection
+Tech Environment: Fast-paced, ownership-driven, high autonomy
+
+--- HIRING URGENCY ---
+Urgency Level: High
+Expected Time to Hire: 15 days
+
+--- PLACEMENT HISTORY ---
+Successful Candidate Profiles:
+
+1. 3-5 years experience, startup background, strong in Python + SQL
+2. Worked in product-based companies, handled scalable systems
+
+Common Skills in Past Hires:
+Python, SQL, REST APIs, AWS
+
+Average Experience of Hired Candidates:
+4 years
+
+--- CULTURE ---
+Work Style: Fast-paced, ownership-driven
+Culture Tags: Startup, Agile, Product-focused
+
+--- NOTES ---
+
+* Candidate should be comfortable handling end-to-end features
+* Prefer candidates who have worked in small teams
+* High adaptability is important
