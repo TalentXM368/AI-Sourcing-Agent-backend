@@ -70,6 +70,7 @@ export interface ParsedCandidate {
   projects: Project[]
   certifications: Certification[]
   languages: Language[]
+  resume_url?: string
 }
 
 export interface ParsedJob {

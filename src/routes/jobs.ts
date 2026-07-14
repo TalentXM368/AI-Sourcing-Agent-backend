@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
-import { db } from '../db/index.js'
+import { db, pool } from '../db/index.js'
 import { randomUUID } from 'crypto'
+import { matchJobToAllCandidates } from '../scoring/index.js'
+import { generateEmbeddings } from '../services/openai.js'
 
 export const jobsRouter = Router()
 
@@ -93,6 +95,7 @@ jobsRouter.get('/:id/ranked', async (req: Request, res: Response) => {
         'ranked_candidates.llm_score',
         'ranked_candidates.llm_verdict',
         'ranked_candidates.llm_reasoning',
+        'ranked_candidates.ats_score',
         'ranked_candidates.decision',
         'candidates.name',
         'candidates.email',
@@ -112,6 +115,9 @@ jobsRouter.get('/:id/ranked', async (req: Request, res: Response) => {
         'candidates.certifications',
         'candidates.languages',
         'candidates.resume_url',
+        'candidates.data_quality_score',
+        'candidates.missing_fields',
+        'candidates.stage',
       ])
       .where('ranked_candidates.job_id', '=', req.params.id)
       .orderBy('ranked_candidates.total_score', 'desc')
@@ -147,6 +153,36 @@ jobsRouter.post('/', async (req: Request, res: Response) => {
       updated_at: now,
     }).returningAll().executeTakeFirst()
 
+    if (!job) {
+      return res.status(500).json({ error: 'Failed to create job' })
+    }
+
+    // Generate embeddings for the job
+    try {
+      const fullText = `${body.role} ${body.company || ''} ${body.location || ''} ${(body.required_skills || []).join(' ')} ${body.description || ''}`
+      const skillsText = (body.required_skills || []).join(' ')
+      const roleText = body.role
+
+      const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+
+      for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
+        await pool.query(
+          `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+           VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())
+           ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
+          [randomUUID(), job.id, purpose, vector]
+        )
+      }
+      console.log(`[Jobs] Embeddings generated for job ${job.id}`)
+    } catch (err: any) {
+      console.error(`[Jobs] Embedding generation failed for job ${job.id}:`, err.message)
+    }
+
+    // Score all existing candidates against this new job
+    matchJobToAllCandidates(job.id).catch(err => {
+      console.error(`[Jobs] Scoring failed for job ${job.id}:`, err.message)
+    })
+
     res.status(201).json(job)
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -173,6 +209,30 @@ jobsRouter.post('/:id/decisions', async (req: Request, res: Response) => {
     if (error instanceof z.ZodError) {
       return res.status(400).json({ error: 'Validation failed', details: error.errors })
     }
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Trigger Scoring (manual) ────────────────────────────────
+
+jobsRouter.post('/:id/score', async (req: Request, res: Response) => {
+  try {
+    const job = await db.selectFrom('jobs')
+      .selectAll()
+      .where('id', '=', req.params.id)
+      .executeTakeFirst()
+
+    if (!job) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    // Run scoring async, return immediately
+    matchJobToAllCandidates(job.id).catch(err => {
+      console.error(`[Jobs] Manual scoring failed for job ${job.id}:`, err.message)
+    })
+
+    res.json({ message: `Scoring started for "${job.role}"`, job_id: job.id })
+  } catch (error) {
     res.status(500).json({ error: String(error) })
   }
 })

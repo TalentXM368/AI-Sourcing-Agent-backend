@@ -13,6 +13,8 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
+    "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.6.0",
     "adm-zip": "^0.5.18",
     "cloudinary": "^2.5.1",

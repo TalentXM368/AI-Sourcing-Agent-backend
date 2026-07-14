@@ -33,6 +33,10 @@ export interface Database {
     source_file: string | null
     parse_status: string
     parse_error: string | null
+    data_quality_score: number | null
+    missing_fields: string[] | undefined
+    stage: string | undefined
+    stage_updated_at: Date | null
     created_at: Date
     updated_at: Date
   }
@@ -97,6 +101,7 @@ export interface Database {
     llm_score: number
     llm_verdict: string | null
     llm_reasoning: string | null
+    ats_score: number | null
     decision: string
     created_at: Date
   }

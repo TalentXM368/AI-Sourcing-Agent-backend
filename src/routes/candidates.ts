@@ -116,3 +116,39 @@ candidatesRouter.get('/:id', async (req: Request, res: Response) => {
     res.status(500).json({ error: String(error) })
   }
 })
+
+// ─── Update Candidate Stage ───────────────────────────────────
+
+const VALID_STAGES = ['new', 'contacted', 'screening', 'interviewing', 'offered', 'placed', 'rejected', 'withdrawn']
+
+candidatesRouter.patch('/:id/stage', async (req: Request, res: Response) => {
+  try {
+    const { stage } = req.body
+
+    if (!stage || !VALID_STAGES.includes(stage)) {
+      return res.status(400).json({ error: `Invalid stage. Must be one of: ${VALID_STAGES.join(', ')}` })
+    }
+
+    const candidate = await db.selectFrom('candidates')
+      .select(['id', 'stage'])
+      .where('id', '=', req.params.id)
+      .executeTakeFirst()
+
+    if (!candidate) {
+      return res.status(404).json({ error: 'Candidate not found' })
+    }
+
+    await db.updateTable('candidates')
+      .set({
+        stage,
+        stage_updated_at: new Date(),
+        updated_at: new Date(),
+      })
+      .where('id', '=', req.params.id)
+      .execute()
+
+    res.json({ id: req.params.id, stage, previous_stage: candidate.stage })
+  } catch (error) {
+    res.status(500).json({ error: String(error) })
+  }
+})

@@ -9,6 +9,7 @@ import { parseJobDescription } from '../parsers/jd-parser.js'
 import { generateEmbeddings } from '../services/openai.js'
 import { matchCandidateToAllJobs, matchJobToAllCandidates } from '../scoring/index.js'
 import { listCloudinaryFolder, fetchFromCloudinary } from '../services/cloudinary.js'
+import { computeDataQuality } from '../scoring/data-quality.js'
 
 export const uploadRouter = Router()
 
@@ -98,7 +99,8 @@ async function insertEmbeddings(
   for (const v of vectors) {
     await pool.query(
       `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'text-embedding-3-small', NOW())`,
+       VALUES ($1, $2, $3, $4, $5, 'text-embedding-3-small', NOW())
+       ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $5, model = 'text-embedding-3-small'`,
       [randomUUID(), entityType, entityId, v.purpose, v.vector]
     )
   }
@@ -188,6 +190,9 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
 
         const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+        // Compute data quality
+        const quality = computeDataQuality(parsed as any)
+
         // Update candidate
         await db.updateTable('candidates')
           .set({
@@ -210,6 +215,8 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
             languages: JSON.stringify(parsed.languages),
             raw_text: text,
             resume_url: url,
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
             parse_status: 'completed',
           })
           .where('id', '=', candidateId)
@@ -322,6 +329,9 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
 
         const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+        // Compute data quality
+        const quality = computeDataQuality(parsed as any)
+
         // Update candidate with parsed data
         await db.updateTable('candidates')
           .set({
@@ -343,6 +353,8 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
             certifications: JSON.stringify(parsed.certifications),
             languages: JSON.stringify(parsed.languages),
             raw_text: text,
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
             parse_status: 'completed',
           })
           .where('id', '=', candidateId)
@@ -432,6 +444,9 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
 
     const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+    // Compute data quality
+    const quality = computeDataQuality(parsed as any)
+
     // Update candidate
     await db.updateTable('candidates')
       .set({
@@ -454,6 +469,8 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
         languages: JSON.stringify(parsed.languages),
         raw_text: text,
         resume_url: candidate.source_file,
+        data_quality_score: quality.quality_score,
+        missing_fields: quality.missing_fields,
         parse_status: 'completed',
         parse_error: null,
         updated_at: new Date(),
@@ -568,6 +585,9 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
 
         const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+        // Compute data quality
+        const quality = computeDataQuality(parsed as any)
+
         // Update candidate
         await db.updateTable('candidates')
           .set({
@@ -589,6 +609,8 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
             certifications: JSON.stringify(parsed.certifications),
             languages: JSON.stringify(parsed.languages),
             raw_text: text,
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
             parse_status: 'completed',
             parse_error: null,
             updated_at: new Date(),
@@ -859,6 +881,9 @@ uploadRouter.post('/reparse-all', async (req: Request, res: Response) => {
 
         const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+        // Compute data quality
+        const quality = computeDataQuality(parsed as any)
+
         // Update candidate
         await db.updateTable('candidates')
           .set({
@@ -880,6 +905,8 @@ uploadRouter.post('/reparse-all', async (req: Request, res: Response) => {
             certifications: JSON.stringify(parsed.certifications),
             languages: JSON.stringify(parsed.languages),
             raw_text: text,
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
             parse_status: 'completed',
             updated_at: new Date(),
           })
@@ -958,6 +985,9 @@ uploadRouter.post('/reparse-fast', async (req: Request, res: Response) => {
           if (nameFromFilename) candidateName = nameFromFilename
         }
 
+        // Compute data quality
+        const quality = computeDataQuality(parsed as any)
+
         // Update candidate
         await db.updateTable('candidates')
           .set({
@@ -978,6 +1008,8 @@ uploadRouter.post('/reparse-fast', async (req: Request, res: Response) => {
             projects: JSON.stringify(parsed.projects),
             certifications: JSON.stringify(parsed.certifications),
             languages: JSON.stringify(parsed.languages),
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
             parse_status: 'completed',
             parse_error: null,
             updated_at: new Date(),

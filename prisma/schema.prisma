@@ -33,6 +33,10 @@ model Candidate {
   sourceFile      String?   @map("source_file")
   parseStatus     String    @default("pending") @map("parse_status")
   parseError      String?   @map("parse_error")
+  dataQualityScore Int?     @map("data_quality_score")
+  missingFields   String[]  @default([]) @map("missing_fields")
+  stage           String    @default("new")
+  stageUpdatedAt  DateTime? @map("stage_updated_at")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
@@ -132,6 +136,7 @@ model RankedCandidate {
   llmScore         Float     @default(0) @map("llm_score")
   llmVerdict       String?   @map("llm_verdict")
   llmReasoning     String?   @map("llm_reasoning")
+  atsScore         Int?      @map("ats_score")
   decision         String    @default("pending")
   createdAt        DateTime  @default(now()) @map("created_at")
 

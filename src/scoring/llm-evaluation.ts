@@ -83,6 +83,9 @@ function buildJobSummary(job: any): string {
 
 // ─── LLM Evaluation ────────────────────────────────────────────
 
+let lastGroqCall = 0
+const GROQ_MIN_INTERVAL_MS = 5000 // 5 seconds between calls to avoid 429
+
 export async function evaluateCandidateWithLLM(
   candidate: any,
   job: any
@@ -91,6 +94,14 @@ export async function evaluateCandidateWithLLM(
     console.warn('[LLM Eval] No Groq API key, skipping')
     return null
   }
+
+  // Rate limit: wait if needed
+  const now = Date.now()
+  const elapsed = now - lastGroqCall
+  if (elapsed < GROQ_MIN_INTERVAL_MS) {
+    await new Promise(r => setTimeout(r, GROQ_MIN_INTERVAL_MS - elapsed))
+  }
+  lastGroqCall = Date.now()
 
   const candidateSummary = buildCandidateSummary(candidate)
   const jobSummary = buildJobSummary(job)
@@ -144,7 +155,39 @@ Return ONLY valid JSON (no markdown, no explanation):
       verdict: (parsed.verdict || '').slice(0, 200),
       reasoning: (parsed.reasoning || '').slice(0, 1000),
     }
-  } catch (error) {
+  } catch (error: any) {
+    // Retry once on 429 with longer delay
+    if (error?.status === 429 || error?.message?.includes('429')) {
+      console.warn(`[LLM Eval] Rate limited for ${candidate.name}, retrying in 10s...`)
+      await new Promise(r => setTimeout(r, 10000))
+      lastGroqCall = Date.now()
+      try {
+        const response = await groq.chat.completions.create({
+          model: 'llama-3.3-70b-versatile',
+          temperature: 0.1,
+          max_tokens: 512,
+          messages: [
+            { role: 'system', content: 'You are an expert technical recruiter. Return ONLY valid JSON.' },
+            { role: 'user', content: prompt },
+          ],
+        })
+        const content = response.choices[0]?.message?.content
+        if (!content) return null
+        let jsonStr = content.trim()
+        if (jsonStr.startsWith('```')) {
+          jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+        }
+        const parsed = JSON.parse(jsonStr)
+        return {
+          score: Math.min(100, Math.max(0, Math.round(parsed.score || 50))),
+          verdict: (parsed.verdict || '').slice(0, 200),
+          reasoning: (parsed.reasoning || '').slice(0, 1000),
+        }
+      } catch {
+        console.error(`[LLM Eval] Retry also failed for ${candidate.name}`)
+        return null
+      }
+    }
     console.error('[LLM Eval] Failed:', error)
     return null
   }
