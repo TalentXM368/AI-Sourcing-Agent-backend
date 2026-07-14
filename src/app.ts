@@ -6,6 +6,7 @@ import { candidatesRouter } from './routes/candidates.js'
 import { clientsRouter } from './routes/clients.js'
 import { healthRouter } from './routes/health.js'
 import { uploadRouter } from './routes/upload.js'
+import { settingsRouter } from './routes/settings.js'
 
 const app = express()
 
@@ -22,7 +23,7 @@ app.use(cors({
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true)
     } else {
-      callback(null, true) // allow all for now
+      callback(new Error(`Origin ${origin} not allowed`))
     }
   },
   credentials: true,
@@ -38,6 +39,7 @@ app.use('/api/jobs', jobsRouter)
 app.use('/api/candidates', candidatesRouter)
 app.use('/api/clients', clientsRouter)
 app.use('/api/upload', uploadRouter)
+app.use('/api/settings', settingsRouter)
 
 // ─── Error Handler ────────────────────────────────────────────
 

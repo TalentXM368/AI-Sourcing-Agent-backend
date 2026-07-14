@@ -30,19 +30,26 @@ export async function matchCandidateToAllJobs(candidateId: string): Promise<void
     .where('status', '=', 'open')
     .execute()
 
-  for (const job of jobs) {
-    const jobEmbedding = await db.selectFrom('embeddings')
-      .select('vector')
-      .where('entity_id', '=', job.id)
-      .where('entity_type', '=', 'job')
-      .where('purpose', '=', 'full_text')
-      .executeTakeFirst()
+  // Batch-load all job embeddings in one query (avoids N+1)
+  const jobIds = jobs.map(j => j.id)
+  const allJobEmbeddings = jobIds.length > 0
+    ? await db.selectFrom('embeddings')
+        .select(['entity_id', 'vector'])
+        .where('entity_type', '=', 'job')
+        .where('purpose', '=', 'full_text')
+        .where('entity_id', 'in', jobIds)
+        .execute()
+    : []
 
-    const jobVec = jobEmbedding?.vector
-    const candVec = candEmbedding?.vector
+  const jobEmbMap = new Map<string, number[]>()
+  for (const e of allJobEmbeddings) jobEmbMap.set(e.entity_id, e.vector as number[])
+
+  const candVec = candEmbedding?.vector as number[] | undefined
+
+  for (const job of jobs) {
+    const jobVec = jobEmbMap.get(job.id)
     const useSemantic = !!(jobVec && candVec && jobVec.length === candVec.length)
 
-    // Phase 1: instant score without LLM
     await scoreCandidateForJob(candidate, useSemantic ? candVec! : null, job, undefined, useSemantic ? jobVec! : null, false)
   }
 

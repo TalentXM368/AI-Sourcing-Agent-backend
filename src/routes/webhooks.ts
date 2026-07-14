@@ -10,6 +10,9 @@ import { parseCSV, convertToJDs } from '../parsers/csv-parser.js'
 import { generateEmbeddings } from '../services/openai.js'
 import { fetchFromCloudinary } from '../services/cloudinary.js'
 import { matchCandidateToAllJobs, matchJobToAllCandidates } from '../scoring/index.js'
+import { classifyRegion } from '../services/region-classifier.js'
+import { classifyIndustry } from '../services/industry-classifier.js'
+import { isAutoSyncEnabled } from './settings.js'
 
 export const webhooksRouter = Router()
 
@@ -26,26 +29,30 @@ const WebhookSchema = z.object({
 // ─── Webhook Handler ──────────────────────────────────────────
 
 webhooksRouter.post('/ingest', async (req: Request, res: Response) => {
+  // Always return 200 to prevent retry storms from callers
   try {
     const body = WebhookSchema.parse(req.body)
     console.log(`[Webhook] Received ${body.type}`, body.zoho_id ? `(zoho: ${body.zoho_id})` : '')
 
     switch (body.type) {
       case 'resume':
-        await handleResume(body.url!, body.zoho_id)
+        if (!body.url) { res.json({ received: true, error: 'Missing url' }); return }
+        handleResume(body.url, body.zoho_id).catch(err => console.error('[Webhook] Async resume error:', err))
         break
       case 'jd':
-        await handleJD(body.url!, body.client_id, body.zoho_id)
+        if (!body.url) { res.json({ received: true, error: 'Missing url' }); return }
+        handleJD(body.url, body.client_id, body.zoho_id).catch(err => console.error('[Webhook] Async jd error:', err))
         break
       case 'client':
-        await handleClient(body.data!, body.zoho_id)
+        if (!body.data) { res.json({ received: true, error: 'Missing data' }); return }
+        handleClient(body.data, body.zoho_id).catch(err => console.error('[Webhook] Async client error:', err))
         break
     }
 
     res.json({ received: true })
   } catch (error) {
     console.error('[Webhook] Error:', error)
-    res.status(400).json({ error: String(error) })
+    res.status(200).json({ received: true, error: String(error) })
   }
 })
 
@@ -82,6 +89,11 @@ async function handleResume(url: string, zohoId?: string) {
 
     const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+    // Classify industry and region
+    const skillNames = parsed.skills.map((s: any) => s.name || s)
+    const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+    const regionResult = classifyRegion(parsed.location || '')
+
     // 6. Update candidate with parsed data
     await db.updateTable('candidates')
       .set({
@@ -103,6 +115,8 @@ async function handleResume(url: string, zohoId?: string) {
         certifications: JSON.stringify(parsed.certifications),
         languages: JSON.stringify(parsed.languages),
         raw_text: text,
+        industry: industryResult.industry,
+        region: regionResult,
         parse_status: 'completed',
       })
       .where('id', '=', candidateId)
@@ -166,6 +180,10 @@ async function handleJD(url: string, clientId?: string, zohoId?: string) {
 
     const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+    // Classify industry and region
+    const industryResult = await classifyIndustry(fullText, parsed.required_skills, parsed.role)
+    const regionResult = classifyRegion(parsed.location || '')
+
     // 6. Update job with parsed data
     await db.updateTable('jobs')
       .set({
@@ -179,6 +197,8 @@ async function handleJD(url: string, clientId?: string, zohoId?: string) {
         experience_max: parsed.experience_max,
         description: parsed.description,
         raw_text: text,
+        industry: industryResult.industry,
+        region: regionResult,
       })
       .where('id', '=', jobId)
       .execute()
@@ -292,7 +312,7 @@ webhooksRouter.post('/cloudinary', async (req: Request, res: Response) => {
       }
     }
 
-    const { notification_type, public_id, secure_url, resource_type, format } = payload
+    const { notification_type, public_id, secure_url, resource_type } = payload
 
     // Only process raw file uploads (resumes, JDs)
     if (resource_type !== 'raw') {
@@ -301,38 +321,53 @@ webhooksRouter.post('/cloudinary', async (req: Request, res: Response) => {
 
     console.log(`[Cloudinary Webhook] ${notification_type}: ${public_id}`)
 
+    // Check if auto-sync is enabled
+    const isResume = public_id.includes('Resumes') || public_id.includes('resumes')
+    const isJD = public_id.includes('JDs') || public_id.includes('jds') || public_id.includes('JobDescriptions')
+
+    if (isResume && !isAutoSyncEnabled('resumes')) {
+      console.log(`[Cloudinary Webhook] Auto-sync disabled for resumes, skipping: ${public_id}`)
+      return res.json({ received: true, skipped: true, reason: 'auto_sync_disabled' })
+    }
+    if (isJD && !isAutoSyncEnabled('jds')) {
+      console.log(`[Cloudinary Webhook] Auto-sync disabled for JDs, skipping: ${public_id}`)
+      return res.json({ received: true, skipped: true, reason: 'auto_sync_disabled' })
+    }
+
+    // Return 200 immediately, process in background to avoid Vercel timeout
+    res.json({ received: true })
+
+    // Process async — errors won't affect the response
     if (notification_type === 'upload') {
-      // Check file type based on folder and extension
-      const isResume = public_id.includes('Resumes') || public_id.includes('resumes')
-      const isJD = public_id.includes('JDs') || public_id.includes('jds') || public_id.includes('JobDescriptions')
       const isCSV = public_id.endsWith('.csv')
 
       if (isCSV) {
-        // CSV file with multiple JDs — process the whole file
-        console.log(`[Cloudinary Webhook] CSV detected: ${public_id}`)
-        await processCloudinaryJDSCSV(secure_url, public_id)
+        processCloudinaryJDSCSV(secure_url, public_id).catch(err =>
+          console.error(`[Cloudinary Webhook] CSV processing failed:`, err))
       } else if (isResume) {
-        await processCloudinaryResume(secure_url, public_id)
+        processCloudinaryResume(secure_url, public_id).catch(err =>
+          console.error(`[Cloudinary Webhook] Resume processing failed:`, err))
       } else if (isJD) {
-        await processCloudinaryJD(secure_url, public_id)
+        processCloudinaryJD(secure_url, public_id).catch(err =>
+          console.error(`[Cloudinary Webhook] JD processing failed:`, err))
       } else {
         console.log(`[Cloudinary Webhook] Unknown folder for ${public_id}, processing as resume`)
-        await processCloudinaryResume(secure_url, public_id)
+        processCloudinaryResume(secure_url, public_id).catch(err =>
+          console.error(`[Cloudinary Webhook] Resume processing failed:`, err))
       }
     } else if (notification_type === 'delete') {
-      // Handle deletion — mark candidate as deleted
-      await db.updateTable('candidates')
+      db.updateTable('candidates')
         .set({ parse_status: 'deleted', updated_at: new Date() })
         .where('source_file', '=', secure_url)
-        .execute()
-      console.log(`[Cloudinary Webhook] Deleted candidate for ${public_id}`)
+        .execute().catch(err =>
+          console.error(`[Cloudinary Webhook] Delete handling failed:`, err))
     }
-
-    res.json({ received: true })
   } catch (error) {
     console.error('[Cloudinary Webhook] Error:', error)
-    // Return 200 to prevent Cloudinary from retrying
-    res.status(200).json({ received: true, error: String(error) })
+    // Always return 200 to prevent Cloudinary retries
+    if (!res.headersSent) {
+      res.status(200).json({ received: true, error: String(error) })
+    }
   }
 })
 
@@ -426,6 +461,11 @@ async function processCloudinaryResume(url: string, publicId: string) {
 
     const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+    // Classify industry and region
+    const skillNames = parsed.skills.map((s: any) => s.name || s)
+    const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+    const regionResult = classifyRegion(parsed.location || '')
+
     // Update candidate
     await db.updateTable('candidates')
       .set({
@@ -448,6 +488,8 @@ async function processCloudinaryResume(url: string, publicId: string) {
         languages: JSON.stringify(parsed.languages),
         raw_text: text,
         resume_url: url,
+        industry: industryResult.industry,
+        region: regionResult,
         parse_status: 'completed',
       })
       .where('id', '=', candidateId)
@@ -534,6 +576,10 @@ async function processCloudinaryJD(url: string, publicId: string) {
 
     const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
+    // Classify industry and region
+    const industryResult = await classifyIndustry(fullText, parsed.required_skills, parsed.role)
+    const regionResult = classifyRegion(parsed.location || '')
+
     // Update job
     await db.updateTable('jobs')
       .set({
@@ -547,6 +593,8 @@ async function processCloudinaryJD(url: string, publicId: string) {
         experience_max: parsed.experience_max,
         description: parsed.description,
         raw_text: text,
+        industry: industryResult.industry,
+        region: regionResult,
       })
       .where('id', '=', jobId)
       .execute()

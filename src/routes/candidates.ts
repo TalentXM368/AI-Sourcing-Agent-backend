@@ -84,13 +84,21 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
 
 // ─── List Candidates ──────────────────────────────────────────
 
-candidatesRouter.get('/', async (_req: Request, res: Response) => {
+candidatesRouter.get('/', async (req: Request, res: Response) => {
   try {
-    const candidates = await db.selectFrom('candidates')
+    let query = db.selectFrom('candidates')
       .selectAll()
       .where('parse_status', '=', 'completed')
-      .orderBy('created_at', 'desc')
-      .execute()
+
+    // Apply filters
+    if (req.query.industry) {
+      query = query.where('industry', '=', req.query.industry as string)
+    }
+    if (req.query.region) {
+      query = query.where('region', '=', req.query.region as string)
+    }
+
+    const candidates = await query.orderBy('created_at', 'desc').execute()
 
     res.json(candidates)
   } catch (error) {

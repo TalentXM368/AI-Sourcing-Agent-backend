@@ -36,6 +36,8 @@ export interface Database {
     data_quality_score: number | null
     missing_fields: string[] | undefined
     stage: string | undefined
+    industry: string | null
+    region: string | null
     stage_updated_at: Date | null
     created_at: Date
     updated_at: Date
@@ -53,6 +55,8 @@ export interface Database {
     experience_max: number | null
     description: string | null
     raw_text: string | null
+    industry: string | null
+    region: string | null
     status: string
     created_at: Date
     updated_at: Date
@@ -112,9 +116,10 @@ export interface Database {
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 10,
-  idleTimeoutMillis: 30000,
+  max: 1,
+  idleTimeoutMillis: 0,
   connectionTimeoutMillis: 15000,
+  allowExitOnIdle: true,
 })
 
 export const db = new Kysely<Database>({

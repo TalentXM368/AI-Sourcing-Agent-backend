@@ -4,6 +4,8 @@ import { db, pool } from '../db/index.js'
 import { randomUUID } from 'crypto'
 import { matchJobToAllCandidates } from '../scoring/index.js'
 import { generateEmbeddings } from '../services/openai.js'
+import { classifyRegion } from '../services/region-classifier.js'
+import { classifyIndustry } from '../services/industry-classifier.js'
 
 export const jobsRouter = Router()
 
@@ -29,23 +31,33 @@ const DecisionSchema = z.object({
 
 // ─── List Jobs ────────────────────────────────────────────────
 
-jobsRouter.get('/', async (_req: Request, res: Response) => {
+jobsRouter.get('/', async (req: Request, res: Response) => {
   try {
-    const jobs = await db.selectFrom('jobs')
-      .selectAll()
-      .orderBy('created_at', 'desc')
+    let query = db.selectFrom('jobs').selectAll()
+
+    // Apply filters
+    if (req.query.industry) {
+      query = query.where('industry', '=', req.query.industry as string)
+    }
+    if (req.query.region) {
+      query = query.where('region', '=', req.query.region as string)
+    }
+
+    const jobs = await query.orderBy('created_at', 'desc').execute()
+
+    // Batch-load candidate counts in one query (avoids N+1)
+    const counts = await db.selectFrom('ranked_candidates')
+      .select(['job_id', (eb) => eb.fn.count('id').as('count')])
+      .groupBy('job_id')
       .execute()
 
-    // Get candidate count for each job
-    const jobsWithCount = await Promise.all(
-      jobs.map(async (job) => {
-        const count = await db.selectFrom('ranked_candidates')
-          .select((eb) => eb.fn.count('id').as('count'))
-          .where('job_id', '=', job.id)
-          .executeTakeFirst()
-        return { ...job, candidate_count: Number(count?.count ?? 0) }
-      })
-    )
+    const countMap = new Map<string, number>()
+    for (const c of counts) countMap.set(c.job_id, Number(c.count))
+
+    const jobsWithCount = jobs.map(job => ({
+      ...job,
+      candidate_count: countMap.get(job.id) ?? 0,
+    }))
 
     res.json(jobsWithCount)
   } catch (error) {
@@ -118,6 +130,8 @@ jobsRouter.get('/:id/ranked', async (req: Request, res: Response) => {
         'candidates.data_quality_score',
         'candidates.missing_fields',
         'candidates.stage',
+        'candidates.industry',
+        'candidates.region',
       ])
       .where('ranked_candidates.job_id', '=', req.params.id)
       .orderBy('ranked_candidates.total_score', 'desc')
@@ -157,9 +171,19 @@ jobsRouter.post('/', async (req: Request, res: Response) => {
       return res.status(500).json({ error: 'Failed to create job' })
     }
 
+    // Classify industry and region
+    const fullText = `${body.role} ${body.company || ''} ${body.location || ''} ${(body.required_skills || []).join(' ')} ${body.description || ''}`
+    const industryResult = await classifyIndustry(fullText, body.required_skills || [], body.role)
+    const regionResult = classifyRegion(body.location || '')
+
+    // Update job with classification
+    await db.updateTable('jobs')
+      .set({ industry: industryResult.industry, region: regionResult })
+      .where('id', '=', job.id)
+      .execute()
+
     // Generate embeddings for the job
     try {
-      const fullText = `${body.role} ${body.company || ''} ${body.location || ''} ${(body.required_skills || []).join(' ')} ${body.description || ''}`
       const skillsText = (body.required_skills || []).join(' ')
       const roleText = body.role
 

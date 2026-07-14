@@ -10,6 +10,8 @@ import { generateEmbeddings } from '../services/openai.js'
 import { matchCandidateToAllJobs, matchJobToAllCandidates } from '../scoring/index.js'
 import { listCloudinaryFolder, fetchFromCloudinary } from '../services/cloudinary.js'
 import { computeDataQuality } from '../scoring/data-quality.js'
+import { classifyRegion } from '../services/region-classifier.js'
+import { classifyIndustry } from '../services/industry-classifier.js'
 
 export const uploadRouter = Router()
 
@@ -444,34 +446,41 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
 
     const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
-    // Compute data quality
-    const quality = computeDataQuality(parsed as any)
+        // Compute data quality
+        const quality = computeDataQuality(parsed as any)
 
-    // Update candidate
-    await db.updateTable('candidates')
-      .set({
-        name: candidateName,
-        email: parsed.email,
-        phone: parsed.phone,
-        linkedin_url: parsed.linkedin_url,
-        github_url: parsed.github_url,
-        portfolio_url: parsed.portfolio_url,
-        headline: parsed.headline,
-        location: parsed.location,
-        summary: parsed.summary,
-        experience_years: parsed.experience_years,
-        skills: JSON.stringify(parsed.skills),
-        companies: JSON.stringify(parsed.companies),
-        work_history: JSON.stringify(parsed.work_history),
-        education: JSON.stringify(parsed.education),
-        projects: JSON.stringify(parsed.projects),
+        // Classify industry and region
+        const skillNames = parsed.skills.map((s: any) => s.name || s)
+        const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+        const regionResult = classifyRegion(parsed.location || '')
+
+        // Update candidate
+        await db.updateTable('candidates')
+          .set({
+            name: candidateName,
+            email: parsed.email,
+            phone: parsed.phone,
+            linkedin_url: parsed.linkedin_url,
+            github_url: parsed.github_url,
+            portfolio_url: parsed.portfolio_url,
+            headline: parsed.headline,
+            location: parsed.location,
+            summary: parsed.summary,
+            experience_years: parsed.experience_years,
+            skills: JSON.stringify(parsed.skills),
+            companies: JSON.stringify(parsed.companies),
+            work_history: JSON.stringify(parsed.work_history),
+            education: JSON.stringify(parsed.education),
+            projects: JSON.stringify(parsed.projects),
         certifications: JSON.stringify(parsed.certifications),
         languages: JSON.stringify(parsed.languages),
         raw_text: text,
         resume_url: candidate.source_file,
-        data_quality_score: quality.quality_score,
-        missing_fields: quality.missing_fields,
-        parse_status: 'completed',
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
+            industry: industryResult.industry,
+            region: regionResult,
+            parse_status: 'completed',
         parse_error: null,
         updated_at: new Date(),
       })

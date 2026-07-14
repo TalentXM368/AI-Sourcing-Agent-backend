@@ -36,6 +36,8 @@ model Candidate {
   dataQualityScore Int?     @map("data_quality_score")
   missingFields   String[]  @default([]) @map("missing_fields")
   stage           String    @default("new")
+  industry        String?
+  region          String?
   stageUpdatedAt  DateTime? @map("stage_updated_at")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
@@ -62,6 +64,8 @@ model Job {
   experienceMax     Int?      @map("experience_max")
   description       String?
   rawText           String?   @map("raw_text")
+  industry          String?
+  region            String?
   status            String    @default("open")
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
