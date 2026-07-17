@@ -22,8 +22,8 @@ settingsRouter.get('/', async (_req: Request, res: Response) => {
   try {
     await loadSettings()
     res.json({
-      auto_sync_resumes: settingsCache.get('auto_sync_resumes') ?? false,
-      auto_sync_jds: settingsCache.get('auto_sync_jds') ?? false,
+      auto_sync_resumes: settingsCache.get('auto_sync_resumes') ?? true,
+      auto_sync_jds: settingsCache.get('auto_sync_jds') ?? true,
     })
   } catch (error) {
     res.status(500).json({ error: String(error) })
@@ -39,7 +39,7 @@ settingsRouter.get('/:key', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid setting key' })
     }
     await loadSettings()
-    res.json({ key, value: settingsCache.get(key) ?? false })
+    res.json({ key, value: settingsCache.get(key) ?? true })
   } catch (error) {
     res.status(500).json({ error: String(error) })
   }
