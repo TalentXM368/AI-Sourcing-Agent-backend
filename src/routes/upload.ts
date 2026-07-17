@@ -251,6 +251,134 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
   }
 })
 
+// ─── Sync All JDs from Cloudinary ────────────────────────────
+
+uploadRouter.post('/sync-jds', async (req: Request, res: Response) => {
+  try {
+    const folder = req.body.folder || 'candidates/JDs'
+
+    // 1. List all files in Cloudinary folder
+    const files = await listCloudinaryFolder(folder, 200)
+    console.log(`[JD Sync] Found ${files.length} files in Cloudinary folder: ${folder}`)
+
+    if (files.length === 0) {
+      return res.json({ synced: 0, skipped: 0, failed: 0, total: 0, message: `No files found in folder: ${folder}` })
+    }
+
+    // 2. Check which ones are already ingested (by raw_text containing the public_id)
+    const existingJobs = await db.selectFrom('jobs')
+      .select(['id', 'role', 'raw_text'])
+      .execute()
+
+    let synced = 0
+    let skipped = 0
+    let failed = 0
+    const errors: string[] = []
+
+    // 3. Process each file
+    for (const file of files) {
+      const url = file.secure_url
+      const publicId = file.public_id
+
+      // Skip already-ingested (check by public_id in description or raw_text)
+      const alreadyExists = existingJobs.some(j => j.raw_text?.includes(publicId) || j.role?.includes(publicId.split('/').pop()?.replace(/\.\w+$/, '') || ''))
+      if (alreadyExists) {
+        skipped++
+        continue
+      }
+
+      try {
+        const jobId = randomUUID()
+        const now = new Date()
+
+        // Store job (processing)
+        await db.insertInto('jobs').values({
+          id: jobId,
+          role: 'Processing...',
+          status: 'open',
+          required_skills: [],
+          nice_to_have_skills: [],
+          avoid_skills: [],
+          created_at: now,
+          updated_at: now,
+        }).execute()
+
+        // Fetch file from Cloudinary
+        const fileBuffer = await fetchFromCloudinary(url, publicId)
+
+        // Detect mimetype
+        const ext = publicId.split('.').pop()?.toLowerCase() || 'pdf'
+        const mimetype = ext === 'docx'
+          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          : ext === 'doc'
+          ? 'application/msword'
+          : 'application/pdf'
+
+        // Extract text
+        const text = await extractTextFromBuffer(fileBuffer, mimetype)
+
+        // Parse JD
+        const parsed = await parseJobDescription(text)
+
+        // Generate embeddings
+        const fullText = `${parsed.role} ${parsed.description || ''} ${parsed.required_skills.join(' ')} ${text}`
+        const skillsText = parsed.required_skills.join(' ')
+        const roleText = parsed.role
+
+        const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+
+        // Classify industry and region
+        const industryResult = await classifyIndustry(fullText, parsed.required_skills, parsed.role)
+        const regionResult = classifyRegion(parsed.location || '')
+
+        // Update job with parsed data
+        await db.updateTable('jobs')
+          .set({
+            role: parsed.role,
+            company: parsed.company,
+            location: parsed.location,
+            required_skills: parsed.required_skills,
+            nice_to_have_skills: parsed.nice_to_have_skills || [],
+            avoid_skills: parsed.avoid_skills || [],
+            experience_min: parsed.experience_min,
+            experience_max: parsed.experience_max,
+            description: parsed.description,
+            raw_text: text,
+            industry: industryResult.industry,
+            region: regionResult,
+          })
+          .where('id', '=', jobId)
+          .execute()
+
+        // Store embeddings (raw SQL)
+        for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
+          await pool.query(
+            `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+             VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())`,
+            [randomUUID(), jobId, purpose, vector]
+          )
+        }
+
+        // Match against all candidates
+        await matchJobToAllCandidates(jobId)
+
+        synced++
+        console.log(`[JD Sync] Ingested: ${parsed.role} from ${publicId}`)
+      } catch (error) {
+        failed++
+        const errMsg = `${publicId}: ${String(error)}`
+        errors.push(errMsg)
+        console.error(`[JD Sync] Failed:`, errMsg)
+      }
+    }
+
+    res.json({ synced, skipped, failed, total: files.length, errors })
+  } catch (error) {
+    console.error('[JD Sync] Error:', error)
+    res.status(500).json({ error: String(error) })
+  }
+})
+
 // ─── List Cloudinary Files ────────────────────────────────────
 
 uploadRouter.get('/cloudinary-files', async (req: Request, res: Response) => {
