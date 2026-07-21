@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { db, pool } from '../db/index.js'
 import { randomUUID } from 'crypto'
 import { createHash } from 'crypto'
-import { extractTextFromBuffer, extractTextFromPdf } from '../parsers/text-extractor.js'
+import { extractTextFromBuffer, detectMimetype } from '../parsers/text-extractor.js'
 import { parseResume } from '../parsers/resume-parser.js'
 import { parseJobDescription } from '../parsers/jd-parser.js'
 import { parseCSV, convertToJDs } from '../parsers/csv-parser.js'
@@ -73,11 +73,12 @@ async function handleResume(url: string, zohoId?: string) {
   }).execute()
 
   try {
-    // 2. Fetch PDF from Cloudinary
+    // 2. Fetch file from Cloudinary
     const pdfBuffer = await fetchFromCloudinary(url)
 
-    // 3. Extract text
-    const text = await extractTextFromPdf(pdfBuffer)
+    // 3. Detect mimetype and extract text
+    const mimetype = detectMimetype(url)
+    const text = await extractTextFromBuffer(pdfBuffer, mimetype)
 
     // 4. Parse resume
     const parsed = await parseResume(text)
@@ -164,11 +165,12 @@ async function handleJD(url: string, clientId?: string, zohoId?: string) {
   }).execute()
 
   try {
-    // 2. Fetch PDF from Cloudinary
+    // 2. Fetch file from Cloudinary
     const pdfBuffer = await fetchFromCloudinary(url)
 
-    // 3. Extract text
-    const text = await extractTextFromPdf(pdfBuffer)
+    // 3. Detect mimetype and extract text
+    const mimetype = detectMimetype(url)
+    const text = await extractTextFromBuffer(pdfBuffer, mimetype)
 
     // 4. Parse JD
     const parsed = await parseJobDescription(text)
@@ -405,12 +407,7 @@ async function processCloudinaryResume(url: string, publicId: string) {
     const fileBuffer = await fetchFromCloudinary(url, cloudinaryPublicId)
 
     // Detect mimetype
-    const ext = publicId.split('.').pop()?.toLowerCase() || 'pdf'
-    const mimetype = ext === 'docx'
-      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      : ext === 'doc'
-      ? 'application/msword'
-      : 'application/pdf'
+    const mimetype = detectMimetype(publicId)
 
     // Extract text
     let text: string
@@ -556,12 +553,7 @@ async function processCloudinaryJD(url: string, publicId: string) {
     const fileBuffer = await fetchFromCloudinary(url, publicId)
 
     // Detect mimetype
-    const ext = publicId.split('.').pop()?.toLowerCase() || 'pdf'
-    const mimetype = ext === 'docx'
-      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      : ext === 'doc'
-      ? 'application/msword'
-      : 'application/pdf'
+    const mimetype = detectMimetype(publicId)
 
     // Extract text
     const text = await extractTextFromBuffer(fileBuffer, mimetype)

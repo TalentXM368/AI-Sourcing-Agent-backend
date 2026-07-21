@@ -71,6 +71,16 @@ export interface ParsedCandidate {
   certifications: Certification[]
   languages: Language[]
   resume_url?: string
+  confidence?: {
+    overall: number
+    name: number
+    contact: number
+    skills: number
+    experience: number
+    education: number
+  }
+  warnings?: string[]
+  parse_source?: 'ai' | 'ai+regex' | 'regex'
 }
 
 export interface ParsedJob {

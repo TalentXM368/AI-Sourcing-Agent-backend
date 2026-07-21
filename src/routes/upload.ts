@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express'
 import { randomUUID } from 'crypto'
 import { db } from '../db/index.js'
 import { pool } from '../db/index.js'
-import { extractTextFromBuffer } from '../parsers/text-extractor.js'
+import { extractTextFromBuffer, detectMimetype } from '../parsers/text-extractor.js'
 import { parseResume, parseResumeRegex } from '../parsers/resume-parser.js'
 import { parseCSV, convertToJDs } from '../parsers/csv-parser.js'
 import { parseJobDescription } from '../parsers/jd-parser.js'
@@ -143,8 +143,8 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
         continue
       }
 
+      let candidateId = randomUUID()
       try {
-        const candidateId = randomUUID()
         const now = new Date()
 
         // Store candidate (processing)
@@ -161,13 +161,8 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
         // Fetch file using signed URL
         const pdfBuffer = await fetchFromCloudinary(url, file.public_id)
 
-        // Detect mimetype from file extension (public_id)
-        const ext = file.public_id.split('.').pop()?.toLowerCase() || 'pdf'
-        const mimetype = ext === 'docx'
-          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-          : ext === 'doc'
-          ? 'application/msword'
-          : 'application/pdf'
+        // Detect mimetype from file extension
+        const mimetype = detectMimetype(file.public_id)
 
         // Extract text
         const text = await extractTextFromBuffer(pdfBuffer, mimetype)
@@ -241,6 +236,18 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
         const errMsg = `${file.public_id}: ${String(error)}`
         errors.push(errMsg)
         console.error(`[Sync] Failed:`, errMsg)
+        // Mark candidate as failed instead of leaving 'Processing...'
+        try {
+          await db.updateTable('candidates')
+            .set({
+              name: `Failed: ${String(error).slice(0, 50)}`,
+              parse_status: 'failed',
+              parse_error: String(error).slice(0, 500),
+              updated_at: new Date(),
+            })
+            .where('id', '=', candidateId)
+            .execute()
+        } catch {}
       }
     }
 
@@ -307,12 +314,7 @@ uploadRouter.post('/sync-jds', async (req: Request, res: Response) => {
         const fileBuffer = await fetchFromCloudinary(url, publicId)
 
         // Detect mimetype
-        const ext = publicId.split('.').pop()?.toLowerCase() || 'pdf'
-        const mimetype = ext === 'docx'
-          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-          : ext === 'doc'
-          ? 'application/msword'
-          : 'application/pdf'
+        const mimetype = detectMimetype(publicId)
 
         // Extract text
         const text = await extractTextFromBuffer(fileBuffer, mimetype)
@@ -422,8 +424,8 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
     const errors: string[] = []
 
     for (const file of files) {
+      let candidateId = randomUUID()
       try {
-        const candidateId = randomUUID()
         const now = new Date()
 
         // Store candidate (status: processing)
@@ -504,6 +506,18 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
       } catch (error) {
         failed++
         errors.push(`${file.name}: ${String(error)}`)
+        // Mark candidate as failed instead of leaving 'Processing...'
+        try {
+          await db.updateTable('candidates')
+            .set({
+              name: `Failed: ${String(error).slice(0, 50)}`,
+              parse_status: 'failed',
+              parse_error: String(error).slice(0, 500),
+              updated_at: new Date(),
+            })
+            .where('id', '=', candidateId)
+            .execute()
+        } catch {}
       }
     }
 
@@ -544,12 +558,7 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
     const pdfBuffer = await fetchFromCloudinary(candidate.source_file, publicId)
 
     // Detect mimetype
-    const ext = candidate.source_file.split('.').pop()?.toLowerCase() || 'pdf'
-    const mimetype = ext === 'docx'
-      ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-      : ext === 'doc'
-      ? 'application/msword'
-      : 'application/pdf'
+    const mimetype = detectMimetype(candidate.source_file)
 
     // Extract text
     const text = await extractTextFromBuffer(pdfBuffer, mimetype)
@@ -678,12 +687,7 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
         const pdfBuffer = await fetchFromCloudinary(candidate.source_file, publicId)
 
         // Detect mimetype
-        const ext = candidate.source_file.split('.').pop()?.toLowerCase() || 'pdf'
-        const mimetype = ext === 'docx'
-          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-          : ext === 'doc'
-          ? 'application/msword'
-          : 'application/pdf'
+        const mimetype = detectMimetype(candidate.source_file)
 
         // Extract text (may fail for .doc files)
         let text: string
@@ -776,6 +780,99 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
     }
 
     res.json({ total: badCandidates.length, results })
+  } catch (error) {
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Cleanup Stuck Processing Candidates ─────────────────────
+
+uploadRouter.post('/cleanup-stuck', async (_req: Request, res: Response) => {
+  try {
+    // Find candidates stuck in 'processing' for > 5 minutes
+    const stuck = await db.selectFrom('candidates')
+      .selectAll()
+      .where('parse_status', '=', 'processing')
+      .where('updated_at', '<', new Date(Date.now() - 5 * 60 * 1000))
+      .execute()
+
+    console.log(`[Cleanup] Found ${stuck.length} stuck candidates`)
+
+    let fixed = 0
+    let failedCleanup = 0
+
+    for (const c of stuck) {
+      try {
+        // If they have raw_text, try to re-parse
+        if (c.raw_text && c.raw_text.trim().length > 50) {
+          const parsed = await parseResume(c.raw_text)
+          let candidateName = parsed.name
+          if (!isValidPersonName(candidateName) && c.source_file) {
+            const nameFromFilename = extractNameFromFilename(c.source_file)
+            if (nameFromFilename) candidateName = nameFromFilename
+          }
+
+          const quality = computeDataQuality(parsed as any)
+          await db.updateTable('candidates')
+            .set({
+              name: candidateName,
+              email: parsed.email,
+              phone: parsed.phone,
+              linkedin_url: parsed.linkedin_url,
+              github_url: parsed.github_url,
+              portfolio_url: parsed.portfolio_url,
+              headline: parsed.headline,
+              location: parsed.location,
+              summary: parsed.summary,
+              experience_years: parsed.experience_years,
+              skills: JSON.stringify(parsed.skills),
+              companies: JSON.stringify(parsed.companies),
+              work_history: JSON.stringify(parsed.work_history),
+              education: JSON.stringify(parsed.education),
+              projects: JSON.stringify(parsed.projects),
+              certifications: JSON.stringify(parsed.certifications),
+              languages: JSON.stringify(parsed.languages),
+              data_quality_score: quality.quality_score,
+              missing_fields: quality.missing_fields,
+              parse_status: 'completed',
+              parse_error: null,
+              updated_at: new Date(),
+            })
+            .where('id', '=', c.id)
+            .execute()
+
+          await matchCandidateToAllJobs(c.id).catch(() => {})
+          fixed++
+          console.log(`[Cleanup] Fixed: ${c.id} → "${candidateName}"`)
+        } else {
+          // No raw_text — mark as failed
+          await db.updateTable('candidates')
+            .set({
+              name: 'Failed: no raw text available',
+              parse_status: 'failed',
+              parse_error: 'Stuck in processing with no extractable text',
+              updated_at: new Date(),
+            })
+            .where('id', '=', c.id)
+            .execute()
+          failedCleanup++
+        }
+      } catch (error) {
+        // Mark as failed
+        await db.updateTable('candidates')
+          .set({
+            name: `Failed: ${String(error).slice(0, 50)}`,
+            parse_status: 'failed',
+            parse_error: String(error).slice(0, 500),
+            updated_at: new Date(),
+          })
+          .where('id', '=', c.id)
+          .execute()
+        failedCleanup++
+      }
+    }
+
+    res.json({ stuck: stuck.length, fixed, failed: failedCleanup })
   } catch (error) {
     res.status(500).json({ error: String(error) })
   }
@@ -985,12 +1082,7 @@ uploadRouter.post('/reparse-all', async (req: Request, res: Response) => {
         const fileBuffer = await fetchFromCloudinary(candidate.source_file, publicId)
 
         // Detect mimetype
-        const ext = candidate.source_file.split('.').pop()?.toLowerCase() || 'pdf'
-        const mimetype = ext === 'docx'
-          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-          : ext === 'doc'
-          ? 'application/msword'
-          : 'application/pdf'
+        const mimetype = detectMimetype(candidate.source_file)
 
         // Extract text
         let text: string
@@ -1190,6 +1282,126 @@ uploadRouter.post('/reparse-fast', async (req: Request, res: Response) => {
     res.json({ total: candidates.length, processed: limit, success: successCount, failed: failCount, results })
   } catch (error) {
     console.error('[Reparse Fast] Error:', error)
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Groq-powered Re-parse (latest N candidates) ─────────────
+// Uses Groq llama-3.3-70b for re-parsing — good accuracy, fast
+// Accepts candidate IDs to reparse, or reparse latest N candidates
+
+uploadRouter.post('/reparse-groq', async (req: Request, res: Response) => {
+  try {
+    const candidateIds: string[] | undefined = req.body.candidate_ids
+    const limit = (req.body.limit as number) || 15
+
+    let candidates
+    if (candidateIds && candidateIds.length > 0) {
+      candidates = await db.selectFrom('candidates')
+        .selectAll()
+        .where('id', 'in', candidateIds)
+        .execute()
+    } else {
+      candidates = await db.selectFrom('candidates')
+        .selectAll()
+        .where('parse_status', '=', 'completed')
+        .where('raw_text', 'is not', null)
+        .orderBy('created_at', 'desc')
+        .limit(limit)
+        .execute()
+    }
+
+    console.log(`[Groq Reparse] Starting Groq re-parse of ${candidates.length} candidates`)
+
+    const results: Array<{ id: string; name: string; success: boolean; error?: string }> = []
+    let processed = 0
+
+    for (const candidate of candidates) {
+      if (!candidate.raw_text) continue
+
+      try {
+        console.log(`[Groq Reparse] (${processed + 1}/${candidates.length}) Re-parsing: ${candidate.name}`)
+
+        const { parseResumeWithGroqOnly } = await import('../services/openai.js')
+        const parsed = await parseResumeWithGroqOnly(candidate.raw_text)
+
+        let candidateName = parsed.name
+        if (!isValidPersonName(candidateName)) {
+          const nameFromFilename = extractNameFromFilename(candidate.source_file || '')
+          if (nameFromFilename) candidateName = nameFromFilename
+        }
+
+        const quality = computeDataQuality(parsed as any)
+
+        const skillNames = parsed.skills.map((s: any) => s.name || s)
+        const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${candidate.raw_text}`
+        const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+        const regionResult = classifyRegion(parsed.location || '')
+
+        await db.updateTable('candidates')
+          .set({
+            name: candidateName,
+            email: parsed.email,
+            phone: parsed.phone,
+            linkedin_url: parsed.linkedin_url,
+            github_url: parsed.github_url,
+            portfolio_url: parsed.portfolio_url,
+            headline: parsed.headline,
+            location: parsed.location,
+            summary: parsed.summary,
+            experience_years: parsed.experience_years,
+            skills: JSON.stringify(parsed.skills),
+            companies: JSON.stringify(parsed.companies),
+            work_history: JSON.stringify(parsed.work_history),
+            education: JSON.stringify(parsed.education),
+            projects: JSON.stringify(parsed.projects),
+            certifications: JSON.stringify(parsed.certifications),
+            languages: JSON.stringify(parsed.languages),
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
+            industry: industryResult.industry,
+            region: regionResult,
+            parse_status: 'completed',
+            parse_error: null,
+            updated_at: new Date(),
+          })
+          .where('id', '=', candidate.id)
+          .execute()
+
+        await deleteEmbeddings(candidate.id)
+
+        const skillsText = parsed.skills.map(s => s.name).join(' ')
+        const roleText = parsed.headline || parsed.companies[0]?.title || ''
+        const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+
+        await insertEmbeddings(candidate.id, [
+          { purpose: 'full_text', vector: fullVec },
+          { purpose: 'skills', vector: skillsVec },
+          { purpose: 'role', vector: roleVec },
+        ])
+
+        await matchCandidateToAllJobs(candidate.id)
+
+        results.push({ id: candidate.id, name: candidateName, success: true })
+        processed++
+        console.log(`[Groq Reparse] Done: "${candidate.name}" → "${candidateName}"`)
+
+        if (processed < candidates.length) {
+          await new Promise(r => setTimeout(r, 6000))
+        }
+      } catch (error) {
+        results.push({ id: candidate.id, name: candidate.name, success: false, error: String(error) })
+        console.error(`[Groq Reparse] Failed: ${candidate.name}:`, error)
+      }
+    }
+
+    const successCount = results.filter(r => r.success).length
+    const failCount = results.filter(r => !r.success).length
+    console.log(`[Groq Reparse] Done: ${successCount} succeeded, ${failCount} failed`)
+
+    res.json({ total: candidates.length, processed: candidates.length, success: successCount, failed: failCount, results })
+  } catch (error) {
+    console.error('[Groq Reparse] Error:', error)
     res.status(500).json({ error: String(error) })
   }
 })

@@ -1,6 +1,13 @@
 import OpenAI from 'openai'
 
-// ─── Groq Client (for LLM evaluation) ─────────────────────────
+// ─── Pollinations Client (primary for LLM evaluation) ──────────
+
+const pollinations = new OpenAI({
+  apiKey: 'pollinations',
+  baseURL: 'https://gen.pollinations.ai/v1',
+})
+
+// ─── Groq Client (fallback) ───────────────────────────────────
 
 const groq = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
@@ -83,30 +90,56 @@ function buildJobSummary(job: any): string {
 
 // ─── LLM Evaluation ────────────────────────────────────────────
 
-let lastGroqCall = 0
-const GROQ_MIN_INTERVAL_MS = 5000 // 5 seconds between calls to avoid 429
+let lastCallTime = 0
+const MIN_INTERVAL_MS = 5000 // 5 seconds between calls to avoid rate limits
+
+async function callWithRateLimit(
+  client: OpenAI,
+  model: string,
+  messages: any[],
+): Promise<string> {
+  const now = Date.now()
+  const elapsed = now - lastCallTime
+  if (elapsed < MIN_INTERVAL_MS) {
+    await new Promise(r => setTimeout(r, MIN_INTERVAL_MS - elapsed))
+  }
+  lastCallTime = Date.now()
+
+  const response = await client.chat.completions.create({
+    model,
+    temperature: 0.1,
+    max_tokens: 512,
+    messages,
+  })
+
+  const content = response.choices[0]?.message?.content
+  if (!content) throw new Error('No response from LLM')
+  return content
+}
+
+function parseLLMResponse(content: string): LLMEvaluation {
+  let jsonStr = content.trim()
+  if (jsonStr.startsWith('```')) {
+    jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
+  }
+
+  const parsed = JSON.parse(jsonStr)
+
+  return {
+    score: Math.min(100, Math.max(0, Math.round(parsed.score || 50))),
+    verdict: (parsed.verdict || '').slice(0, 200),
+    reasoning: (parsed.reasoning || '').slice(0, 1000),
+  }
+}
 
 export async function evaluateCandidateWithLLM(
   candidate: any,
   job: any
 ): Promise<LLMEvaluation | null> {
-  if (!process.env.GROQ_API_KEY) {
-    console.warn('[LLM Eval] No Groq API key, skipping')
-    return null
-  }
-
-  // Rate limit: wait if needed
-  const now = Date.now()
-  const elapsed = now - lastGroqCall
-  if (elapsed < GROQ_MIN_INTERVAL_MS) {
-    await new Promise(r => setTimeout(r, GROQ_MIN_INTERVAL_MS - elapsed))
-  }
-  lastGroqCall = Date.now()
-
   const candidateSummary = buildCandidateSummary(candidate)
   const jobSummary = buildJobSummary(job)
 
-  const prompt = `You are an expert technical recruiter. Evaluate how well this candidate matches the job requirements.
+  const prompt = `You are an expert technical recruiter with 15+ years of experience. Evaluate how well this candidate matches the job requirements.
 
 CANDIDATE PROFILE:
 ${candidateSummary}
@@ -115,80 +148,55 @@ JOB REQUIREMENTS:
 ${jobSummary}
 
 Analyze the candidate's fit based on:
-1. Skills match - do they have the required technical skills?
-2. Experience level - is their YOE appropriate for the role?
+1. Skills match - do they have the required technical skills? Are there exact matches vs related skills?
+2. Experience level - is their YOE appropriate for the role? Too senior or too junior?
 3. Domain relevance - have they worked in similar domains/industries?
-4. Career trajectory - does their career path align with this role?
+4. Career trajectory - does their career path align with this role? Are they progressing?
 5. Education relevance - is their educational background relevant?
+6. Location fit - are they in the right location or willing to relocate?
+7. Red flags - gaps, job hopping, mismatched seniority
+
+Be specific about what matches and what doesn't. Consider both hard skills (technical) and soft skills (leadership, communication).
 
 Return ONLY valid JSON (no markdown, no explanation):
 {
-  "score": <number 0-100, where 90+ = exceptional fit, 70-89 = strong fit, 50-69 = moderate fit, below 50 = weak fit>,
+  "score": <number 0-100, where 90+ = exceptional fit, 70-89 = strong fit, 50-69 = moderate fit, 30-49 = weak fit, below 30 = poor fit>,
   "verdict": "<one short sentence summarizing the match, e.g. 'Strong match — senior React developer with relevant fintech experience'>",
   "reasoning": "<2-4 sentences explaining what fits and what doesn't, be specific about skills and experience gaps>"
 }`
 
+  const messages = [
+    { role: 'system', content: 'You are an expert technical recruiter. Return ONLY valid JSON.' },
+    { role: 'user', content: prompt },
+  ]
+
+  // Try Pollinations first, fallback to Groq
   try {
-    const response = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.1,
-      max_tokens: 512,
-      messages: [
-        { role: 'system', content: 'You are an expert technical recruiter. Return ONLY valid JSON.' },
-        { role: 'user', content: prompt },
-      ],
-    })
-
-    const content = response.choices[0]?.message?.content
-    if (!content) throw new Error('No response from Groq')
-
-    // Clean up response
-    let jsonStr = content.trim()
-    if (jsonStr.startsWith('```')) {
-      jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
-    }
-
-    const parsed = JSON.parse(jsonStr)
-
-    return {
-      score: Math.min(100, Math.max(0, Math.round(parsed.score || 50))),
-      verdict: (parsed.verdict || '').slice(0, 200),
-      reasoning: (parsed.reasoning || '').slice(0, 1000),
-    }
+    const content = await callWithRateLimit(pollinations, 'openai', messages)
+    return parseLLMResponse(content)
   } catch (error: any) {
-    // Retry once on 429 with longer delay
+    console.warn(`[LLM Eval] Pollinations failed for ${candidate.name}:`, error.message?.slice(0, 60))
+  }
+
+  // Fallback to Groq
+  if (!process.env.GROQ_API_KEY) return null
+  try {
+    const content = await callWithRateLimit(groq, 'llama-3.3-70b-versatile', messages)
+    return parseLLMResponse(content)
+  } catch (error: any) {
     if (error?.status === 429 || error?.message?.includes('429')) {
-      console.warn(`[LLM Eval] Rate limited for ${candidate.name}, retrying in 10s...`)
+      console.warn(`[LLM Eval] Groq rate limited for ${candidate.name}, retrying in 10s...`)
       await new Promise(r => setTimeout(r, 10000))
-      lastGroqCall = Date.now()
+      lastCallTime = Date.now()
       try {
-        const response = await groq.chat.completions.create({
-          model: 'llama-3.3-70b-versatile',
-          temperature: 0.1,
-          max_tokens: 512,
-          messages: [
-            { role: 'system', content: 'You are an expert technical recruiter. Return ONLY valid JSON.' },
-            { role: 'user', content: prompt },
-          ],
-        })
-        const content = response.choices[0]?.message?.content
-        if (!content) return null
-        let jsonStr = content.trim()
-        if (jsonStr.startsWith('```')) {
-          jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
-        }
-        const parsed = JSON.parse(jsonStr)
-        return {
-          score: Math.min(100, Math.max(0, Math.round(parsed.score || 50))),
-          verdict: (parsed.verdict || '').slice(0, 200),
-          reasoning: (parsed.reasoning || '').slice(0, 1000),
-        }
+        const content = await callWithRateLimit(groq, 'llama-3.3-70b-versatile', messages)
+        return parseLLMResponse(content)
       } catch {
         console.error(`[LLM Eval] Retry also failed for ${candidate.name}`)
         return null
       }
     }
-    console.error('[LLM Eval] Failed:', error)
+    console.error(`[LLM Eval] Groq failed for ${candidate.name}:`, error.message?.slice(0, 60))
     return null
   }
 }

@@ -27,10 +27,46 @@ export async function parseJobDescription(text: string): Promise<ParsedJob> {
   try {
     const result = await parseJDWithGPT(text)
     console.log('[Parser] AI JD parsing succeeded')
-    return result
+
+    if (!isWeakJDResult(result)) {
+      return result
+    }
+
+    console.log('[Parser] AI JD result is weak, supplementing with regex')
+    const regexResult = parseJDRegex(text)
+    return mergeJDResults(regexResult, result)
   } catch (error) {
     console.warn('[Parser] AI parsing failed, falling back to regex:', error)
     return parseJDRegex(text)
+  }
+}
+
+// ─── Weak JD Result Detection ─────────────────────────────────
+
+function isWeakJDResult(r: ParsedJob): boolean {
+  const hasRole = r.role && r.role !== 'Unknown Role'
+  const hasSkills = r.required_skills.length >= 2
+  const hasDesc = r.description && r.description.length > 30
+  const score = [hasSkills, hasDesc].filter(Boolean).length
+  return !hasRole || score < 1
+}
+
+// ─── Merge AI + Regex JD Results ──────────────────────────────
+
+function mergeJDResults(regex: ParsedJob, ai: ParsedJob): ParsedJob {
+  return {
+    role: ai.role !== 'Unknown Role' ? ai.role : regex.role,
+    company: ai.company || regex.company,
+    location: ai.location || regex.location,
+    required_skills: ai.required_skills.length > 0 ? ai.required_skills : regex.required_skills,
+    nice_to_have_skills: ai.nice_to_have_skills.length > 0 ? ai.nice_to_have_skills : regex.nice_to_have_skills,
+    avoid_skills: ai.avoid_skills.length > 0 ? ai.avoid_skills : regex.avoid_skills,
+    experience_min: ai.experience_min || regex.experience_min,
+    experience_max: ai.experience_max || regex.experience_max,
+    seniority: ai.seniority || regex.seniority,
+    industry: ai.industry || regex.industry,
+    description: ai.description || regex.description,
+    raw_text: ai.raw_text || regex.raw_text,
   }
 }
 
@@ -49,6 +85,8 @@ function parseJDRegex(text: string): ParsedJob {
     avoid_skills: [],
     experience_min: extractExperienceMin(fullText),
     experience_max: extractExperienceMax(fullText),
+    seniority: extractSeniority(fullText),
+    industry: undefined,
     description: text.slice(0, 2000),
     raw_text: text,
   }
@@ -185,5 +223,18 @@ function extractExperienceMax(text: string): number | undefined {
     return parseInt(single[1])
   }
 
+  return undefined
+}
+
+// ─── Seniority Extraction ─────────────────────────────────────
+
+function extractSeniority(text: string): string | undefined {
+  if (/\bprincipal\b/i.test(text)) return 'principal'
+  if (/\bdirector\b/i.test(text)) return 'director'
+  if (/\bstaff\b/i.test(text)) return 'staff'
+  if (/\bsenior\b|\bsr\.?\b/i.test(text)) return 'senior'
+  if (/\bmid[- ]?level\b/i.test(text)) return 'mid'
+  if (/\bjunior\b|\bjr\.?\b|\bentry[- ]?level\b/i.test(text)) return 'junior'
+  if (/\blead\b|\bteam lead\b/i.test(text)) return 'lead'
   return undefined
 }
