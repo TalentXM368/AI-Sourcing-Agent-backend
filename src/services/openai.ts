@@ -572,18 +572,27 @@ function validateName(name: string): string {
   if (!name || name === 'Unknown') return 'Unknown'
   const badPatterns = [
     /\b(?:university|college|institute|academy|polytechnic|consultancy|inc|ltd|corp|llc)\b/i,
-    /\b(?:resume|cv|curriculum|profile|summary|objective|contact)\b/i,
-    /^(?:mobile|email|phone|address|linkedin|github|portfolio|http|www)/i,
+    /\b(?:resume|cv|curriculum|profile|summary|objective|contact|links?)\b/i,
+    /^(?:mobile|email|phone|address|location|linkedin|github|portfolio|http|www)/i,
     /\d{8,}/, // Long digit sequences (file IDs)
     /\.(pdf|docx?|txt)$/i, // File extensions
     /[_@#]/, // Underscores, @, # (filenames)
+    /\b(?:gmail|yahoo|hotmail|outlook|proton|aol)\b/i, // Email providers
+    /^\d+\s/, // Starts with numbers (address)
   ]
   const lower = name.toLowerCase().trim()
   if (badPatterns.some(p => p.test(lower))) return 'Unknown'
   if (name.length > 60 || name.length < 2) return 'Unknown'
   if (/^\d+$/.test(name)) return 'Unknown'
   if (!/[a-zA-Z]/.test(name)) return 'Unknown'
-  return name.trim()
+
+  // Strip trailing credentials: "Kristine G. Jatico aCPHR" → "Kristine G. Jatico"
+  let cleaned = name.replace(/\s+(?:aCPHR|CPA|CFA|FRM|PMP|PHR|SPHR|SHRM-CP|SHRM-SCP|CISSP|CCNA|AWS|GCP|Azure)\b.*$/i, '').trim()
+
+  // Strip trailing commas and periods
+  cleaned = cleaned.replace(/[,.]+$/, '').trim()
+
+  return cleaned || name.trim()
 }
 
 // ═══════════════════════════════════════════════════════════════

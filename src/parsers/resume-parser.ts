@@ -516,6 +516,8 @@ function extractName(lines: string[]): string {
     /@/, /resume/i, /cv/i, /curriculum/i, /phone/i, /email/i, /address/i,
     /linkedin/i, /github/i, /portfolio/i, /http/i, /www\./i,
     /^\d+/, /^\(/, /objective/i, /summary/i, /profile/i,
+    /location\s/i, /present/i, /experience/i, /education/i, /skills/i,
+    /work\s+history/i, /professional/i, /certification/i,
   ]
 
   for (const line of lines.slice(0, 8)) {
@@ -523,14 +525,16 @@ function extractName(lines: string[]): string {
     if (skipPatterns.some(p => p.test(line))) continue
     if (SECTION_HEADER_WORDS.has(line.toLowerCase().replace(/[^a-z\s]/g, '').trim())) continue
 
-    // Clean the name
-    const cleaned = line.replace(/[^a-zA-Z\s\-\.]/g, '').trim()
+    // Clean the name: remove non-alpha, hyphens, dots, leading underscores
+    const cleaned = line.replace(/[^a-zA-Z\s\-\.]/g, '').replace(/^[\s\._-]+/, '').trim()
     if (cleaned.length < 2) continue
 
-    // Handle spaced-out letters: "B H A W A N A S H A R M A" → "BHAWANASHARMA"
-    const collapsed = collapseSpacedLetters(cleaned)
-    if (collapsed.length >= 2 && collapsed.split(/\s/).length <= 5) {
-      return collapsed
+    // Strip file extensions that leaked through: "Shashidhar.pdf" → "Shashidhar"
+    const strippedExt = cleaned.replace(/\.(?:pdf|docx?|txt)$/i, '').trim()
+    if (strippedExt.length >= 2) {
+      // Handle spaced-out letters
+      const collapsed = collapseSpacedLetters(strippedExt)
+      if (collapsed.split(/\s/).length <= 5) return collapsed
     }
 
     // Normal name: 2-5 words

@@ -878,6 +878,105 @@ uploadRouter.post('/cleanup-stuck', async (_req: Request, res: Response) => {
   }
 })
 
+// ─── Fix All Bad Names (fast, from existing raw_text) ────────
+
+uploadRouter.post('/fix-names', async (_req: Request, res: Response) => {
+  try {
+    const badNames = ['Unknown', 'Links', 'CONTACT', 'LINK']
+    const badCandidates = await db.selectFrom('candidates')
+      .selectAll()
+      .where((eb) =>
+        eb.or([
+          eb('name', '=', 'Unknown'),
+          eb('name', 'like', 'Processing%'),
+          eb('name', 'like', 'Failed%'),
+          eb('name', 'like', '%.pdf'),
+          eb('name', 'like', '%.docx'),
+          eb('name', 'like', '%.doc'),
+          eb('name', '=', 'Links'),
+          eb('name', '=', 'CONTACT'),
+          eb('name', '=', 'LINK'),
+        ])
+      )
+      .execute()
+
+    console.log(`[FixNames] Found ${badCandidates.length} candidates with bad names`)
+
+    let fixed = 0
+    let failedFix = 0
+
+    for (const c of badCandidates) {
+      try {
+        if (!c.raw_text || c.raw_text.trim().length < 50) {
+          // No raw text — try filename
+          if (c.source_file) {
+            const nameFromFilename = extractNameFromFilename(c.source_file)
+            if (nameFromFilename) {
+              await db.updateTable('candidates')
+                .set({ name: nameFromFilename, updated_at: new Date() })
+                .where('id', '=', c.id)
+                .execute()
+              fixed++
+              console.log(`[FixNames] Name-only fix: "${c.name}" → "${nameFromFilename}"`)
+              continue
+            }
+          }
+          failedFix++
+          continue
+        }
+
+        const parsed = await parseResume(c.raw_text)
+        let candidateName = parsed.name
+
+        if (!isValidPersonName(candidateName) && c.source_file) {
+          const nameFromFilename = extractNameFromFilename(c.source_file)
+          if (nameFromFilename) candidateName = nameFromFilename
+        }
+
+        if (candidateName && candidateName !== 'Unknown') {
+          // Update all fields, not just name
+          const quality = computeDataQuality(parsed as any)
+          await db.updateTable('candidates')
+            .set({
+              name: candidateName,
+              email: parsed.email,
+              phone: parsed.phone,
+              linkedin_url: parsed.linkedin_url,
+              github_url: parsed.github_url,
+              portfolio_url: parsed.portfolio_url,
+              headline: parsed.headline,
+              location: parsed.location,
+              summary: parsed.summary,
+              experience_years: parsed.experience_years,
+              skills: JSON.stringify(parsed.skills),
+              companies: JSON.stringify(parsed.companies),
+              work_history: JSON.stringify(parsed.work_history),
+              education: JSON.stringify(parsed.education),
+              projects: JSON.stringify(parsed.projects),
+              certifications: JSON.stringify(parsed.certifications),
+              languages: JSON.stringify(parsed.languages),
+              data_quality_score: quality.quality_score,
+              missing_fields: quality.missing_fields,
+              updated_at: new Date(),
+            })
+            .where('id', '=', c.id)
+            .execute()
+          fixed++
+          console.log(`[FixNames] Fixed: "${c.name}" → "${candidateName}"`)
+        } else {
+          failedFix++
+        }
+      } catch (error) {
+        failedFix++
+      }
+    }
+
+    res.json({ total: badCandidates.length, fixed, failed: failedFix })
+  } catch (error) {
+    res.status(500).json({ error: String(error) })
+  }
+})
+
 // ─── Sync JDs from Cloudinary CSV ─────────────────────────────
 // Fetches jds_master.csv from Cloudinary, parses each row, and
 // runs AI JD parsing + embedding + matching for each
