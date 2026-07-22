@@ -1,18 +1,21 @@
+import { config as loadEnv } from 'dotenv'
+import { resolve } from 'path'
 import OpenAI from 'openai'
+
+// Ensure env is loaded before reading API keys
+try { loadEnv({ path: resolve(__dirname, '../../.env') }) } catch {}
 
 // ─── Pollinations Client (primary for LLM evaluation) ──────────
 
-const pollinations = new OpenAI({
-  apiKey: 'pollinations',
-  baseURL: 'https://gen.pollinations.ai/v1',
-})
+const pollinations = process.env.POLLINATIONS_API_KEY
+  ? new OpenAI({ apiKey: process.env.POLLINATIONS_API_KEY, baseURL: 'https://gen.pollinations.ai/v1' })
+  : null
 
 // ─── Groq Client (fallback) ───────────────────────────────────
 
-const groq = new OpenAI({
-  apiKey: process.env.GROQ_API_KEY,
-  baseURL: 'https://api.groq.com/openai/v1',
-})
+const groq = process.env.GROQ_API_KEY
+  ? new OpenAI({ apiKey: process.env.GROQ_API_KEY, baseURL: 'https://api.groq.com/openai/v1' })
+  : null
 
 // ─── Types ─────────────────────────────────────────────────────
 
@@ -171,15 +174,19 @@ Return ONLY valid JSON (no markdown, no explanation):
   ]
 
   // Try Pollinations first, fallback to Groq
-  try {
-    const content = await callWithRateLimit(pollinations, 'openai', messages)
-    return parseLLMResponse(content)
-  } catch (error: any) {
-    console.warn(`[LLM Eval] Pollinations failed for ${candidate.name}:`, error.message?.slice(0, 60))
+  if (pollinations) {
+    try {
+      const content = await callWithRateLimit(pollinations, 'openai', messages)
+      return parseLLMResponse(content)
+    } catch (error: any) {
+      console.warn(`[LLM Eval] Pollinations failed for ${candidate.name}:`, error.message?.slice(0, 60))
+    }
+  } else {
+    console.warn(`[LLM Eval] Pollinations not configured, trying Groq...`)
   }
 
   // Fallback to Groq
-  if (!process.env.GROQ_API_KEY) return null
+  if (!groq) return null
   try {
     const content = await callWithRateLimit(groq, 'llama-3.3-70b-versatile', messages)
     return parseLLMResponse(content)

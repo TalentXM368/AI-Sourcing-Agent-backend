@@ -29,6 +29,11 @@ function extractNameFromFilename(publicId: string): string | undefined {
       return name
     }
   }
+  // Fallback: strip numeric prefix + extension from full basename
+  const cleaned = withoutExt.replace(/^\d+[\s_-]*/, '').replace(/^[_\s]+/, '').trim()
+  if (cleaned.length >= 2 && !cleaned.match(/^\d+$/) && /[a-zA-Z]{2,}/.test(cleaned)) {
+    return cleaned
+  }
   return undefined
 }
 
@@ -356,7 +361,8 @@ uploadRouter.post('/sync-jds', async (req: Request, res: Response) => {
         for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
           await pool.query(
             `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-             VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())`,
+             VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())
+             ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
             [randomUUID(), jobId, purpose, vector]
           )
         }
@@ -1100,7 +1106,8 @@ uploadRouter.post('/sync-jds-csv', async (req: Request, res: Response) => {
         for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
           await pool.query(
             `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-             VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())`,
+             VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())
+             ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
             [randomUUID(), jobId, purpose, vector]
           )
         }

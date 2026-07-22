@@ -41,10 +41,17 @@ app.use('/api/clients', clientsRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/settings', settingsRouter)
 
+// ─── 404 Handler ─────────────────────────────────────────────
+
+app.use((_req, res) => {
+  res.status(404).json({ error: 'Not found' })
+})
+
 // ─── Error Handler ────────────────────────────────────────────
 
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Unhandled error:', err)
+  if (res.headersSent) return
   res.status(500).json({ error: 'Internal server error' })
 })
 

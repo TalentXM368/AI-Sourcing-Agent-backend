@@ -116,10 +116,10 @@ export interface Database {
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 1,
-  idleTimeoutMillis: 0,
+  max: 5,
+  idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 15000,
-  allowExitOnIdle: true,
+  allowExitOnIdle: false,
 })
 
 export const db = new Kysely<Database>({

@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { db, pool } from '../db/index.js'
 import { randomUUID } from 'crypto'
 import { matchJobToAllCandidates } from '../scoring/index.js'
-import { generateEmbeddings } from '../services/openai.js'
+import { generateEmbeddings, parseJDWithAI } from '../services/openai.js'
 import { classifyRegion } from '../services/region-classifier.js'
 import { classifyIndustry } from '../services/industry-classifier.js'
 
@@ -140,6 +140,33 @@ jobsRouter.get('/:id/ranked', async (req: Request, res: Response) => {
     res.json({ ranked_candidates: ranked })
   } catch (error) {
     res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Parse JD (AI) ────────────────────────────────────────────
+
+jobsRouter.post('/parse-jd', async (req: Request, res: Response) => {
+  try {
+    const { text } = req.body
+    if (!text || typeof text !== 'string' || text.trim().length < 20) {
+      return res.status(400).json({ error: 'Provide at least 20 characters of JD text' })
+    }
+
+    const parsed = await parseJDWithAI(text.trim())
+    res.json({
+      role: parsed.role !== 'Unknown Role' ? parsed.role : '',
+      company: parsed.company || '',
+      location: parsed.location || '',
+      required_skills: parsed.required_skills || [],
+      nice_to_have_skills: parsed.nice_to_have_skills || [],
+      experience_min: parsed.experience_min ?? null,
+      experience_max: parsed.experience_max ?? null,
+      seniority: parsed.seniority || '',
+      description: parsed.description || text.slice(0, 2000),
+    })
+  } catch (error: any) {
+    console.error('[Jobs] JD parse failed:', error.message)
+    res.status(500).json({ error: 'AI parsing failed: ' + (error.message || 'Unknown error') })
   }
 })
 

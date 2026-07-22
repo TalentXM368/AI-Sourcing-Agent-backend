@@ -34,10 +34,9 @@ const groqClient = process.env.GROQ_API_KEY
   ? new OpenAI({ apiKey: process.env.GROQ_API_KEY, baseURL: 'https://api.groq.com/openai/v1' })
   : null
 
-const pollinationsClient = new OpenAI({
-  apiKey: 'pollinations',
-  baseURL: 'https://gen.pollinations.ai/v1',
-})
+const pollinationsClient = process.env.POLLINATIONS_API_KEY
+  ? new OpenAI({ apiKey: process.env.POLLINATIONS_API_KEY, baseURL: 'https://gen.pollinations.ai/v1' })
+  : null
 
 const xaiClient = process.env.XAI_API_KEY
   ? new OpenAI({ apiKey: process.env.XAI_API_KEY, baseURL: 'https://api.x.ai/v1' })
@@ -58,7 +57,7 @@ const geminiClient = process.env.GEMINI_API_KEY
 // Log available providers on startup
 const availableProviders = [
   groqClient ? 'Groq' : null,
-  'Pollinations',
+  pollinationsClient ? 'Pollinations' : null,
   xaiClient ? 'xAI' : null,
   openaiClient ? 'OpenAI' : null,
   claudeClient ? 'Claude' : null,
@@ -335,6 +334,7 @@ async function parseWithGroq(text: string): Promise<ParsedCandidate | null> {
 }
 
 async function parseWithPollinations(text: string): Promise<ParsedCandidate | null> {
+  if (!pollinationsClient) return null
   return withRetry(async () => {
     const truncated = smartTruncate(text, 20000)
     const response = await pollinationsClient.chat.completions.create({
@@ -526,7 +526,11 @@ function normalizeParsed(raw: any): ParsedCandidate {
     phone: raw.phone || undefined,
     linkedin_url: raw.linkedin_url || undefined,
     github_url: raw.github_url || undefined,
-    portfolio_url: raw.portfolio_url || undefined,
+    portfolio_url: (() => {
+      const url = raw.portfolio_url || undefined
+      if (url && !url.startsWith('http')) return undefined
+      return url
+    })(),
     headline,
     location,
     summary: raw.summary || undefined,
@@ -732,6 +736,7 @@ async function parseJDWithGroq(text: string): Promise<ParsedJob | null> {
 }
 
 async function parseJDWithPollinations(text: string): Promise<ParsedJob | null> {
+  if (!pollinationsClient) return null
   return withRetry(async () => {
     const truncated = smartTruncate(text, 8000)
     const response = await pollinationsClient.chat.completions.create({
@@ -810,8 +815,8 @@ function normalizeJD(raw: any, rawText: string): ParsedJob {
     required_skills: Array.isArray(raw.required_skills) ? raw.required_skills : [],
     nice_to_have_skills: Array.isArray(raw.nice_to_have_skills) ? raw.nice_to_have_skills : [],
     avoid_skills: Array.isArray(raw.avoid_skills) ? raw.avoid_skills : [],
-    experience_min: raw.experience_min || undefined,
-    experience_max: raw.experience_max || undefined,
+    experience_min: raw.experience_min ?? undefined,
+    experience_max: raw.experience_max ?? undefined,
     seniority: raw.seniority || undefined,
     industry: raw.industry || undefined,
     description: raw.description || rawText.slice(0, 2000),

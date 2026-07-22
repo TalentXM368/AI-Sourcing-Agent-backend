@@ -127,7 +127,8 @@ async function handleResume(url: string, zohoId?: string) {
     for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
       await pool.query(
         `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-         VALUES ($1, 'candidate', $2, $3, $4, 'text-embedding-3-small', NOW())`,
+         VALUES ($1, 'candidate', $2, $3, $4, 'text-embedding-3-small', NOW())
+         ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
         [randomUUID(), candidateId, purpose, vector]
       )
     }
@@ -209,7 +210,8 @@ async function handleJD(url: string, clientId?: string, zohoId?: string) {
     for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
       await pool.query(
         `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-         VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())`,
+         VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())
+         ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
         [randomUUID(), jobId, purpose, vector]
       )
     }
@@ -595,7 +597,8 @@ async function processCloudinaryJD(url: string, publicId: string) {
     for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
       await pool.query(
         `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-         VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())`,
+         VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())
+         ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
         [randomUUID(), jobId, purpose, vector]
       )
     }
@@ -692,13 +695,15 @@ async function processCloudinaryJDSCSV(url: string, publicId: string) {
         const fullText = `${jd.job_title} ${jd.industry || ''} ${jd.region_preference || ''} ${enhancedSkills.join(' ')} ${jd.job_description}`
         const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, enhancedSkills.join(' '), jd.job_title])
 
-        for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
-          await pool.query(
-            `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-             VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())`,
-            [randomUUID(), jobId, purpose, vector]
-          )
-        }
+    for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
+      await pool.query(
+        `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+         VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())
+         ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
+        [randomUUID(), jobId, purpose, vector]
+      )
+    }
+
 
         await matchJobToAllCandidates(jobId)
         existingRoles.add(jd.job_title.toLowerCase())

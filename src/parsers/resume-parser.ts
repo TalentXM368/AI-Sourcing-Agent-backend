@@ -520,7 +520,14 @@ function extractName(lines: string[]): string {
     /work\s+history/i, /professional/i, /certification/i,
   ]
 
-  for (const line of lines.slice(0, 8)) {
+  for (const rawLine of lines.slice(0, 8)) {
+    if (rawLine.length < 2) continue
+
+    // For long lines (name + phone on same line), split at tab/3+ spaces first
+    const line = rawLine.length > 60 || /\t/.test(rawLine)
+      ? (rawLine.split(/\t{1,}/)[0] || rawLine.split(/\s{3,}/)[0] || rawLine).trim()
+      : rawLine
+
     if (line.length < 2 || line.length > 60) continue
     if (skipPatterns.some(p => p.test(line))) continue
     if (SECTION_HEADER_WORDS.has(line.toLowerCase().replace(/[^a-z\s]/g, '').trim())) continue
