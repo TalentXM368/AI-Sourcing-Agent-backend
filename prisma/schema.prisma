@@ -38,6 +38,8 @@ model Candidate {
   stage           String    @default("new")
   industry        String?
   region          String?
+  pdlId           String?   @unique @map("pdl_id")
+  source          String    @default("resume")
   stageUpdatedAt  DateTime? @map("stage_updated_at")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")

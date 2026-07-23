@@ -7,6 +7,7 @@ import { clientsRouter } from './routes/clients.js'
 import { healthRouter } from './routes/health.js'
 import { uploadRouter } from './routes/upload.js'
 import { settingsRouter } from './routes/settings.js'
+import { pdlSearchRouter } from './routes/pdl-search.js'
 
 const app = express()
 
@@ -36,6 +37,7 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }))
 app.use('/api/health', healthRouter)
 app.use('/api/webhooks', webhooksRouter)
 app.use('/api/jobs', jobsRouter)
+app.use('/api/candidates', pdlSearchRouter)
 app.use('/api/candidates', candidatesRouter)
 app.use('/api/clients', clientsRouter)
 app.use('/api/upload', uploadRouter)

@@ -38,6 +38,8 @@ export interface Database {
     stage: string | undefined
     industry: string | null
     region: string | null
+    pdl_id: string | null
+    source: string | undefined
     stage_updated_at: Date | null
     created_at: Date
     updated_at: Date
