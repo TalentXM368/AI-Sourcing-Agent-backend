@@ -243,6 +243,101 @@ jobsRouter.post('/', async (req: Request, res: Response) => {
   }
 })
 
+// ─── Update Job ──────────────────────────────────────────────
+
+jobsRouter.put('/:id', async (req: Request, res: Response) => {
+  try {
+    const body = CreateJobSchema.parse(req.body)
+
+    const existing = await db.selectFrom('jobs')
+      .selectAll()
+      .where('id', '=', req.params.id)
+      .executeTakeFirst()
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    const now = new Date()
+    const fullText = `${body.role} ${body.company || ''} ${body.location || ''} ${(body.required_skills || []).join(' ')} ${body.description || ''}`
+
+    // Classify industry and region
+    const industryResult = await classifyIndustry(fullText, body.required_skills || [], body.role)
+    const regionResult = classifyRegion(body.location || '')
+
+    const updated = await db.updateTable('jobs')
+      .set({
+        role: body.role,
+        company: body.company || null,
+        location: body.location || null,
+        required_skills: body.required_skills,
+        nice_to_have_skills: body.nice_to_have_skills || [],
+        avoid_skills: body.avoid_skills || [],
+        experience_min: body.experience_min ?? null,
+        experience_max: body.experience_max ?? null,
+        description: body.description || null,
+        industry: industryResult.industry,
+        region: regionResult,
+        updated_at: now,
+      })
+      .where('id', '=', req.params.id)
+      .returningAll()
+      .executeTakeFirst()
+
+    if (!updated) {
+      return res.status(500).json({ error: 'Failed to update job' })
+    }
+
+    // Re-generate embeddings
+    try {
+      const skillsText = (body.required_skills || []).join(' ')
+      const roleText = body.role
+      const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+
+      for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
+        await pool.query(
+          `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+           VALUES ($1, 'job', $2, $3, $4, 'text-embedding-3-small', NOW())
+           ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
+          [randomUUID(), updated.id, purpose, vector]
+        )
+      }
+    } catch (err: any) {
+      console.error(`[Jobs] Embedding re-generation failed for job ${updated.id}:`, err.message)
+    }
+
+    // Re-score all candidates
+    matchJobToAllCandidates(updated.id).catch(err => {
+      console.error(`[Jobs] Re-scoring failed for job ${updated.id}:`, err.message)
+    })
+
+    res.json(updated)
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({ error: 'Validation failed', details: error.errors })
+    }
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Delete Job ──────────────────────────────────────────────
+
+jobsRouter.delete('/:id', async (req: Request, res: Response) => {
+  try {
+    const deleted = await db.deleteFrom('jobs')
+      .where('id', '=', req.params.id)
+      .executeTakeFirst()
+
+    if (!deleted || deleted.numDeletedRows === 0n) {
+      return res.status(404).json({ error: 'Job not found' })
+    }
+
+    res.json({ success: true })
+  } catch (error) {
+    res.status(500).json({ error: String(error) })
+  }
+})
+
 // ─── Accept/Reject Candidate ─────────────────────────────────
 
 jobsRouter.post('/:id/decisions', async (req: Request, res: Response) => {
