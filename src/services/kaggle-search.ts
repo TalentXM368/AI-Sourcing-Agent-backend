@@ -1,3 +1,5 @@
+import { parseBooleanQuery, hasBooleanOperators } from '../utils/boolean-parser.js'
+
 const KAGGLE_API = 'https://www.kaggle.com/api/v1'
 
 export interface KaggleSearchFilters {
@@ -205,15 +207,48 @@ export async function searchKaggleUsers(
   const size = Math.min(filters.size || 25, 100)
   const sortBy = filters.sortBy || 'votes'
 
-  console.log(`[Kaggle] Searching: "${filters.query}" (sort: ${sortBy}, size: ${size})`)
+  // Parse boolean operators in query
+  let searchQueries: string[]
+  let excludedTerms: string[] = []
 
-  // Search both datasets and kernels in parallel
-  const [datasetResult, kernelResult] = await Promise.all([
-    searchDatasets(filters.query, sortBy, 1, 50),
-    searchKernels(filters.query, sortBy, 1, 50),
-  ])
+  if (hasBooleanOperators(filters.query)) {
+    const bq = parseBooleanQuery(filters.query)
+    searchQueries = bq.terms
+    excludedTerms = bq.excluded
+  } else {
+    searchQueries = [filters.query]
+  }
 
-  console.log(`[Kaggle] Found ${datasetResult.datasets.length} datasets, ${kernelResult.kernels.length} kernels`)
+  console.log(`[Kaggle] Searching: "${filters.query}" (queries: ${searchQueries.join(', ')}, sort: ${sortBy})`)
+
+  // Search both datasets and kernels for each query term
+  const allDatasetResults = await Promise.all(searchQueries.map(q => searchDatasets(q, sortBy, 1, 50)))
+  const allKernelResults = await Promise.all(searchQueries.map(q => searchKernels(q, sortBy, 1, 50)))
+
+  // Deduplicate datasets/kernels across query terms
+  const seenDatasets = new Set<string>()
+  const seenKernels = new Set<string>()
+  const datasets: any[] = []
+  const kernels: any[] = []
+
+  for (const result of allDatasetResults) {
+    for (const ds of result.datasets) {
+      if (!seenDatasets.has(ds.ref)) {
+        seenDatasets.add(ds.ref)
+        datasets.push(ds)
+      }
+    }
+  }
+  for (const result of allKernelResults) {
+    for (const k of result.kernels) {
+      if (!seenKernels.has(k.ref)) {
+        seenKernels.add(k.ref)
+        kernels.push(k)
+      }
+    }
+  }
+
+  console.log(`[Kaggle] Found ${datasets.length} datasets, ${kernels.length} kernels`)
 
   // Extract unique authors from datasets
   const authorMap = new Map<string, {
@@ -227,7 +262,7 @@ export async function searchKaggleUsers(
   }>()
 
   // Process dataset authors
-  for (const ds of datasetResult.datasets) {
+  for (const ds of datasets) {
     const owner = ds.ownerRef ? extractOwnerUsername(ds.ownerRef) : null
     if (!owner) continue
 
@@ -257,7 +292,7 @@ export async function searchKaggleUsers(
   }
 
   // Process kernel authors
-  for (const kernel of kernelResult.kernels) {
+  for (const kernel of kernels) {
     const author = kernel.author
     if (!author) continue
 

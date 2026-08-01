@@ -41,6 +41,8 @@ function getHeaders(): Record<string, string> {
 }
 
 function buildSearchQuery(filters: GithubSearchFilters): string {
+  // GitHub Search API natively supports OR, AND, and - (NOT)
+  // Pass the user's query through as-is to preserve boolean operators
   const parts: string[] = [filters.query]
   if (filters.language) parts.push(`language:${filters.language}`)
   if (filters.location) parts.push(`location:${filters.location}`)

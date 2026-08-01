@@ -12,6 +12,7 @@ import { pdlSearchRouter } from './routes/pdl-search.js'
 import { githubSearchRouter } from './routes/github-search.js'
 import { stackoverflowSearchRouter } from './routes/stackoverflow-search.js'
 import { kaggleSearchRouter } from './routes/kaggle-search.js'
+import { searchAllRouter } from './routes/search-all.js'
 import { searchHistoryRouter } from './routes/search-history.js'
 import { benchmarkRouter } from './routes/benchmark.js'
 import intelligenceRouter from './modules/candidate-intelligence/routes/intelligence.routes.js'
@@ -60,6 +61,7 @@ app.use('/api/candidates', pdlSearchRouter)
 app.use('/api/candidates', githubSearchRouter)
 app.use('/api/candidates', stackoverflowSearchRouter)
 app.use('/api/candidates', kaggleSearchRouter)
+app.use('/api/candidates', searchAllRouter)
 app.use('/api', searchHistoryRouter)
 app.use('/api/candidates', candidatesRouter)
 app.use('/api/clients', clientsRouter)

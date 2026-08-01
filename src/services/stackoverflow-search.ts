@@ -1,3 +1,5 @@
+import { parseBooleanQuery, hasBooleanOperators } from '../utils/boolean-parser.js'
+
 const SO_API = 'https://api.stackexchange.com/2.3'
 
 export interface StackoverflowSearchFilters {
@@ -184,18 +186,29 @@ async function fetchUserProfiles(userIds: number[]): Promise<Map<number, any>> {
 export async function searchStackoverflowUsers(
   filters: StackoverflowSearchFilters
 ): Promise<{ users: StackoverflowUser[]; total: number; invalidTags: string[]; suggestedTags: string[] }> {
-  const tags = filters.tags
-    .split(',')
-    .map(t => t.trim().toLowerCase())
-    .filter(Boolean)
-    .slice(0, 3)
+  // Parse boolean operators in tags: "python OR javascript" → two tags, "python AND react" → both required
+  let tagList: string[]
+  let booleanMode: 'or' | 'and' = 'or'
+
+  if (hasBooleanOperators(filters.tags)) {
+    const bq = parseBooleanQuery(filters.tags)
+    tagList = bq.terms.map(t => t.trim().toLowerCase()).filter(Boolean)
+    booleanMode = bq.operator
+  } else {
+    tagList = filters.tags
+      .split(',')
+      .map(t => t.trim().toLowerCase())
+      .filter(Boolean)
+  }
+
+  tagList = tagList.slice(0, 5)
 
   const size = Math.min(filters.size || 25, 100)
 
-  console.log(`[SO] Searching tags: ${tags.join(', ')} (size: ${size})`)
+  console.log(`[SO] Searching tags: ${tagList.join(', ')} (size: ${size}, mode: ${booleanMode})`)
 
   // Validate tags exist on SO
-  const { valid, invalid } = await validateTags(tags)
+  const { valid, invalid } = await validateTags(tagList)
 
   // If some tags invalid but we have valid ones, continue with valid only
   // If ALL tags invalid, auto-resolve using role mapping or SO tag search
@@ -223,7 +236,7 @@ export async function searchStackoverflowUsers(
   }
 
   if (resolvedTags.length === 0) {
-    console.log(`[SO] No valid tags found for: ${tags.join(', ')}`)
+    console.log(`[SO] No valid tags found for: ${tagList.join(', ')}`)
     return {
       users: [],
       total: 0,

@@ -2,6 +2,8 @@
 // Person Search API: POST https://api.peopledatalabs.com/v5/person/search
 // Docs: https://docs.peopledatalabs.com/docs/person-search-api
 
+import { parseBooleanQuery, hasBooleanOperators } from '../utils/boolean-parser.js'
+
 const PDL_API_URL = 'https://api.peopledatalabs.com/v5/person/search'
 const PDL_TIMEOUT_MS = 15000
 
@@ -84,24 +86,49 @@ const MAX_PDL_SKILLS = 3
 
 export function buildSearchQuery(filters: PdlSearchFilters): Record<string, unknown> {
   const must: unknown[] = []
+  const should: unknown[] = []
+  const mustNot: unknown[] = []
 
   if (filters.jobTitle?.trim()) {
-    must.push({ match: { job_title: filters.jobTitle.trim().toLowerCase() } })
+    if (hasBooleanOperators(filters.jobTitle)) {
+      const bq = parseBooleanQuery(filters.jobTitle)
+      if (bq.terms.length > 1 && bq.operator === 'or') {
+        should.push(...bq.terms.map(t => ({ match: { job_title: t.trim().toLowerCase() } })))
+      } else {
+        for (const term of bq.terms) {
+          must.push({ match: { job_title: term.trim().toLowerCase() } })
+        }
+      }
+      for (const ex of bq.excluded) {
+        mustNot.push({ match: { job_title: ex.trim().toLowerCase() } })
+      }
+    } else {
+      must.push({ match: { job_title: filters.jobTitle.trim().toLowerCase() } })
+    }
   }
 
   if (filters.skills?.length) {
     const topSkills = filters.skills.slice(0, MAX_PDL_SKILLS)
-    must.push({ terms: { skills: topSkills.map(s => s.trim().toLowerCase()) } })
+    const included: string[] = []
+    const excluded: string[] = []
+    for (const s of topSkills) {
+      if (s.toUpperCase().startsWith('NOT ')) {
+        excluded.push(s.slice(4).trim().toLowerCase())
+      } else {
+        included.push(s.trim().toLowerCase())
+      }
+    }
+    if (included.length > 0) {
+      must.push({ terms: { skills: included } })
+    }
+    for (const ex of excluded) {
+      mustNot.push({ terms: { skills: [ex] } })
+    }
   }
 
   if (filters.country?.trim()) {
     must.push({ term: { location_country: filters.country.trim().toLowerCase() } })
   }
-
-  // NOTE: industry is intentionally excluded from PDL queries.
-  // PDL stores industry as lowercase specific strings (e.g. "computer software")
-  // that never match user-entered values (e.g. "Information Technology").
-  // It kills results when included.
 
   if (filters.experience?.trim()) {
     const levels = EXPERIENCE_LEVEL_MAP[filters.experience.trim()]
@@ -111,16 +138,36 @@ export function buildSearchQuery(filters: PdlSearchFilters): Record<string, unkn
   }
 
   if (filters.keywords?.trim()) {
-    must.push({ match: { job_summary: filters.keywords.trim().toLowerCase() } })
+    if (hasBooleanOperators(filters.keywords)) {
+      const bq = parseBooleanQuery(filters.keywords)
+      if (bq.terms.length > 1 && bq.operator === 'or') {
+        should.push(...bq.terms.map(t => ({ match: { job_summary: t.trim().toLowerCase() } })))
+      } else {
+        for (const term of bq.terms) {
+          must.push({ match: { job_summary: term.trim().toLowerCase() } })
+        }
+      }
+      for (const ex of bq.excluded) {
+        mustNot.push({ match: { job_summary: ex.trim().toLowerCase() } })
+      }
+    } else {
+      must.push({ match: { job_summary: filters.keywords.trim().toLowerCase() } })
+    }
   }
 
-  if (must.length === 0) {
+  if (must.length === 0 && should.length === 0) {
     must.push({ match_all: {} })
   }
 
+  const boolClause: Record<string, unknown> = {}
+  if (must.length > 0) boolClause.must = must
+  if (should.length > 0) boolClause.should = should
+  if (mustNot.length > 0) boolClause.must_not = mustNot
+  if (should.length > 0 && must.length === 0) boolClause.minimum_should_match = 1
+
   return {
     query: {
-      bool: { must },
+      bool: boolClause,
     },
   }
 }
@@ -227,17 +274,35 @@ export async function searchPersons(
     throw new PdlError('PDL API key not configured', 500)
   }
 
-  const size = Math.min(Math.max(filters.size || 25, 1), 100)
+  const requestedSize = Math.min(Math.max(filters.size || 25, 1), 100)
   const query = buildSearchQuery(filters)
 
-  // Try the full query first
-  let result = await executePdlQuery(query, size, apiKey)
+  // Try the full query first, with automatic size reduction on 402
+  let result: { data: any[]; total: number; scrollToken: string | null } | null = null
+  const sizesToTry = requestedSize === 100 ? [100, 50, 25, 10] : requestedSize === 50 ? [50, 25, 10] : [requestedSize]
+
+  for (const size of sizesToTry) {
+    try {
+      result = await executePdlQuery(query, size, apiKey)
+      break
+    } catch (err: any) {
+      if (err instanceof PdlError && err.statusCode === 402 && size > 10) {
+        console.log(`[PDL] Quota hit at size=${size}, retrying with smaller size...`)
+        continue
+      }
+      throw err
+    }
+  }
+
+  if (!result) {
+    throw new PdlError('PDL API quota exceeded. Try reducing "Results per search" to 10 or wait for your monthly quota to reset.', 402)
+  }
 
   // If 0 results, try progressively relaxed queries
   if (result.total === 0) {
     const fallbacks = buildFallbackQueries(filters)
     for (const fallbackQuery of fallbacks) {
-      result = await executePdlQuery(fallbackQuery, size, apiKey)
+      result = await executePdlQuery(fallbackQuery, sizesToTry[0], apiKey)
       if (result.total > 0) break
     }
   }
