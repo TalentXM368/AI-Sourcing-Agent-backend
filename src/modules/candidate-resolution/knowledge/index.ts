@@ -1,10 +1,10 @@
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { normalizeCompanyName, normalizeForComparison, jaroWinkler } from '../utils/string-similarity.js';
 
-function loadJson<T>(filename: string): T {
-  return JSON.parse(readFileSync(join(__dirname, filename), 'utf-8'));
-}
+import companiesData from './companies.json';
+import titlesData from './job-titles.json';
+import degreesData from './degrees.json';
+import languagesData from './languages.json';
+import locationsData from './locations.json';
 
 interface CompaniesData {
   aliases: Record<string, string>;
@@ -45,24 +45,24 @@ export class KnowledgeService {
   private countryMappings: Map<string, string>;
 
   constructor() {
-    const companies = loadJson<CompaniesData>('companies.json');
+    const companies = companiesData as CompaniesData;
     this.companyAliases = new Map(Object.entries(companies.aliases));
     this.companyLegalSuffixes = new Set(companies.legalSuffixes);
 
-    const titles = loadJson<JobTitlesData>('job-titles.json');
+    const titles = titlesData as JobTitlesData;
     this.titleCanonicalizations = new Map(Object.entries(titles.canonicalizations));
 
-    const degrees = loadJson<DegreesData>('degrees.json');
+    const degrees = degreesData as DegreesData;
     this.degreeAliases = new Map(Object.entries(degrees.aliases));
     this.degreeLevels = new Map(Object.entries(degrees.levels));
 
-    const languages = loadJson<LanguagesData>('languages.json');
+    const languages = languagesData as LanguagesData;
     this.knownLanguages = new Set(languages.languages.map((l: string) => l.toLowerCase()));
     this.languageProficiencyLevels = new Map(
       Object.entries(languages.proficiencyLevels).map(([k, v]) => [k, v])
     );
 
-    const locations = loadJson<LocationsData>('locations.json');
+    const locations = locationsData as LocationsData;
     this.cityMappings = new Map(Object.entries(locations.cities));
     this.stateMappings = new Map(Object.entries(locations.states));
     this.countryMappings = new Map(Object.entries(locations.countries));
