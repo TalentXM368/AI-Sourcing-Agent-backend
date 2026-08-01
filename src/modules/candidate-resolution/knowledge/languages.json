@@ -1,0 +1,23 @@
+{
+  "languages": [
+    "english", "spanish", "french", "german", "italian", "portuguese", "chinese", "mandarin",
+    "cantonese", "japanese", "korean", "arabic", "hindi", "urdu", "bengali", "tamil",
+    "telugu", "marathi", "gujarati", "kannada", "malayalam", "punjabi", "thai", "vietnamese",
+    "indonesian", "malay", "filipino", "tagalog", "russian", "polish", "czech", "slovak",
+    "hungarian", "romanian", "bulgarian", "serbian", "croatian", "slovenian", "ukrainian",
+    "greek", "turkish", "hebrew", "persian", "farsi", "swahili", "amharic", "zulu",
+    "xhosa", "afrikaans", "somali", "igbo", "yoruba", "hausa", "dutch", "finnish",
+    "swedish", "norwegian", "danish", "icelandic", "irish", "scottish gaelic", "welsh",
+    "basque", "catalan", "galician", "latvian", "lithuanian", "estonian", "armenian",
+    "georgian", "khmer", "lao", "burmese", "sinhala", "nepali", "sanskrit", "tibetan",
+    "malagasy", "maori", "samoan", "tongan", "fijian", "hawaiian", "cherokee", "navajo"
+  ],
+  "proficiencyLevels": {
+    "native": ["native", "mother tongue", "native speaker"],
+    "fluent": ["fluent", "business fluency", "professional fluency", "full professional"],
+    "proficient": ["proficient", "professional working", "professional"],
+    "advanced": ["advanced", "c2", "c1"],
+    "intermediate": ["intermediate", "b2", "b1"],
+    "basic": ["basic", "beginner", "elementary", "a2", "a1", "limited", "working knowledge", "conversational"]
+  }
+}

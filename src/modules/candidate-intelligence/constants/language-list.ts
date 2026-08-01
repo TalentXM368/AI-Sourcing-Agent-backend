@@ -1,0 +1,47 @@
+export const KNOWN_LANGUAGES: string[] = [
+  'english', 'spanish', 'french', 'german', 'italian', 'portuguese', 'chinese', 'mandarin',
+  'cantonese', 'japanese', 'korean', 'arabic', 'hindi', 'urdu', 'bengali', 'tamil',
+  'telugu', 'marathi', 'gujarati', 'kannada', 'malayalam', 'punjabi', 'thai', 'vietnamese',
+  'indonesian', 'malay', 'filipino', 'tagalog', 'russian', 'polish', 'czech', 'slovak',
+  'hungarian', 'romanian', 'bulgarian', 'serbian', 'croatian', 'slovenian', 'ukrainian',
+  'greek', 'turkish', 'hebrew', 'persian', 'farsi', 'swahili', 'amharic', 'zulu',
+  'xhosa', 'afrikaans', 'somali', 'igbo', 'yoruba', 'hausa', 'dutch', 'finnish',
+  'swedish', 'norwegian', 'danish', 'icelandic', 'irish', 'scottish gaelic', 'welsh',
+  'basque', 'catalan', 'galician', 'latvian', 'lithuanian', 'estonian',
+];
+
+export const PROFICIENCY_LEVELS: string[] = [
+  'native', 'fluent', 'proficient', 'advanced', 'intermediate', 'basic', 'beginner',
+  'elementary', 'a1', 'a2', 'b1', 'b2', 'c1', 'c2',
+  'conversational', 'working knowledge', 'limited working proficiency',
+];
+
+export const PROFICIENCY_KEYWORDS: Record<string, string> = {
+  'native': 'native',
+  'mother tongue': 'native',
+  'fluent': 'fluent',
+  'business fluency': 'fluent',
+  'professional fluency': 'fluent',
+  'professional working': 'proficient',
+  'proficient': 'proficient',
+  'advanced': 'advanced',
+  'intermediate': 'intermediate',
+  'basic': 'basic',
+  'beginner': 'beginner',
+  'elementary': 'elementary',
+  'a1': 'a1',
+  'a2': 'a2',
+  'b1': 'b1',
+  'b2': 'b2',
+  'c1': 'c1',
+  'c2': 'c2',
+  'conversational': 'conversational',
+  'working knowledge': 'basic',
+  'limited working proficiency': 'basic',
+  'full professional': 'proficient',
+  'limited': 'basic',
+  'reading': 'basic',
+  'writing': 'basic',
+  'speaking': 'conversational',
+  'listening': 'basic',
+};

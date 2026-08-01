@@ -1,0 +1,10 @@
+export * from './types/index.js';
+export * from './constants/index.js';
+export * from './schemas/index.js';
+export * from './filters/index.js';
+export * from './matchers/index.js';
+export * from './scoring/index.js';
+export * from './confidence/index.js';
+export * from './explanation/index.js';
+export * from './services/index.js';
+export { createMatchingRouter } from './routes/matching.routes.js';
