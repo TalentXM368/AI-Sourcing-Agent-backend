@@ -51,7 +51,10 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
       expires_at: Math.floor(Date.now() / 1000) + 3600,
     })
 
-    const response = await fetch(archiveUrl, { method: 'POST' })
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), 30_000)
+    const response = await fetch(archiveUrl, { method: 'POST', signal: controller.signal })
+    clearTimeout(timeout)
     if (!response.ok) {
       console.error(`[Candidates] Cloudinary archive fetch failed: ${response.status}`)
       return res.status(502).json({ error: 'Failed to fetch resume from storage' })
@@ -387,7 +390,10 @@ async function reprocessCandidate(candidateId: string, fileUrl: string) {
     expires_at: Math.floor(Date.now() / 1000) + 3600,
   })
 
-  const response = await fetch(archiveUrl, { method: 'POST' })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 30_000)
+  const response = await fetch(archiveUrl, { method: 'POST', signal: controller.signal })
+  clearTimeout(timeout)
   if (!response.ok) throw new Error(`Cloudinary fetch failed: ${response.status}`)
 
   const arrayBuffer = await response.arrayBuffer()

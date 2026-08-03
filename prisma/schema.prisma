@@ -10,44 +10,44 @@ datasource db {
 // ─── Candidates ───────────────────────────────────────────────
 
 model Candidate {
-  id              String    @id @default(uuid()) @db.Uuid
-  name            String
-  email           String?
-  phone           String?
-  linkedinUrl     String?   @map("linkedin_url")
-  githubUrl       String?   @map("github_url")
-  portfolioUrl    String?   @map("portfolio_url")
-  headline        String?
-  location        String?
-  summary         String?
-  experienceYears Float?    @map("experience_years")
-  skills          Json      @default("[]")
-  companies       Json      @default("[]")
-  workHistory     Json      @default("[]") @map("work_history")
-  education       Json      @default("[]")
-  projects        Json      @default("[]")
-  certifications  Json      @default("[]")
-  languages       Json      @default("[]")
-  resumeUrl       String?   @map("resume_url")
-  rawText         String?   @map("raw_text")
-  sourceFile      String?   @map("source_file")
-  parseStatus     String    @default("pending") @map("parse_status")
-  parseError      String?   @map("parse_error")
-  dataQualityScore Int?     @map("data_quality_score")
-  missingFields   String[]  @default([]) @map("missing_fields")
-  stage           String    @default("new")
-  industry        String?
-  region          String?
-  pdlId           String?   @unique @map("pdl_id")
-  soId            String?   @unique @map("so_id")
-  source          String    @default("resume")
-  stageUpdatedAt  DateTime? @map("stage_updated_at")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
+  id               String    @id @default(uuid()) @db.Uuid
+  name             String
+  email            String?
+  phone            String?
+  linkedinUrl      String?   @map("linkedin_url")
+  githubUrl        String?   @map("github_url")
+  portfolioUrl     String?   @map("portfolio_url")
+  headline         String?
+  location         String?
+  summary          String?
+  experienceYears  Float?    @map("experience_years")
+  skills           Json      @default("[]")
+  companies        Json      @default("[]")
+  workHistory      Json      @default("[]") @map("work_history")
+  education        Json      @default("[]")
+  projects         Json      @default("[]")
+  certifications   Json      @default("[]")
+  languages        Json      @default("[]")
+  resumeUrl        String?   @map("resume_url")
+  rawText          String?   @map("raw_text")
+  sourceFile       String?   @map("source_file")
+  parseStatus      String    @default("pending") @map("parse_status")
+  parseError       String?   @map("parse_error")
+  dataQualityScore Int?      @map("data_quality_score")
+  missingFields    String[]  @default([]) @map("missing_fields")
+  stage            String    @default("new")
+  industry         String?
+  region           String?
+  pdlId            String?   @unique @map("pdl_id")
+  soId             String?   @unique @map("so_id")
+  source           String    @default("resume")
+  stageUpdatedAt   DateTime? @map("stage_updated_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
 
-  embeddings      Embedding[]
+  embeddings       Embedding[]
   rankedCandidates RankedCandidate[]
-  aiEvaluations   AiEvaluation[]
+  aiEvaluations    AiEvaluation[]
 
   @@unique([sourceFile])
   @@map("candidates")
@@ -56,28 +56,28 @@ model Candidate {
 // ─── Jobs ─────────────────────────────────────────────────────
 
 model Job {
-  id                String    @id @default(uuid()) @db.Uuid
-  clientId          String?   @map("client_id") @db.Uuid
-  role              String
-  company           String?
-  location          String?
-  requiredSkills    String[]  @default([]) @map("required_skills")
-  niceToHaveSkills  String[]  @default([]) @map("nice_to_have_skills")
-  avoidSkills       String[]  @default([]) @map("avoid_skills")
-  experienceMin     Int?      @map("experience_min")
-  experienceMax     Int?      @map("experience_max")
-  description       String?
-  rawText           String?   @map("raw_text")
-  industry          String?
-  region            String?
-  status            String    @default("open")
-  createdAt         DateTime  @default(now()) @map("created_at")
-  updatedAt         DateTime  @updatedAt @map("updated_at")
+  id               String   @id @default(uuid()) @db.Uuid
+  clientId         String?  @map("client_id") @db.Uuid
+  role             String
+  company          String?
+  location         String?
+  requiredSkills   String[] @default([]) @map("required_skills")
+  niceToHaveSkills String[] @default([]) @map("nice_to_have_skills")
+  avoidSkills      String[] @default([]) @map("avoid_skills")
+  experienceMin    Int?     @map("experience_min")
+  experienceMax    Int?     @map("experience_max")
+  description      String?
+  rawText          String?  @map("raw_text")
+  industry         String?
+  region           String?
+  status           String   @default("open")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
 
-  client            Client?   @relation(fields: [clientId], references: [id], onDelete: SetNull)
-  embeddings        Embedding[]
-  rankedCandidates  RankedCandidate[]
-  aiEvaluations     AiEvaluation[]
+  client           Client?           @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  embeddings       Embedding[]
+  rankedCandidates RankedCandidate[]
+  aiEvaluations    AiEvaluation[]
 
   @@map("jobs")
 }
@@ -85,23 +85,23 @@ model Job {
 // ─── Clients ──────────────────────────────────────────────────
 
 model Client {
-  id                  String    @id @default(uuid()) @db.Uuid
-  zohoAccountId       String?   @unique @map("zoho_account_id")
-  accountName         String    @map("account_name")
-  industry            String?
-  location            String?
-  status              String    @default("active")
-  urgency             String    @default("medium")
-  openRoles           Int       @default(0) @map("open_roles")
-  placementsYtd       Int       @default(0) @map("placements_ytd")
-  hiringPreferences   Json      @default("{}") @map("hiring_preferences")
-  culture             Json      @default("{}")
-  roleContext          Json      @default("{}") @map("role_context")
-  historicalPatterns  Json      @default("{}") @map("historical_patterns")
-  createdAt           DateTime  @default(now()) @map("created_at")
-  updatedAt           DateTime  @updatedAt @map("updated_at")
+  id                 String   @id @default(uuid()) @db.Uuid
+  zohoAccountId      String?  @unique @map("zoho_account_id")
+  accountName        String   @map("account_name")
+  industry           String?
+  location           String?
+  status             String   @default("active")
+  urgency            String   @default("medium")
+  openRoles          Int      @default(0) @map("open_roles")
+  placementsYtd      Int      @default(0) @map("placements_ytd")
+  hiringPreferences  Json     @default("{}") @map("hiring_preferences")
+  culture            Json     @default("{}")
+  roleContext        Json     @default("{}") @map("role_context")
+  historicalPatterns Json     @default("{}") @map("historical_patterns")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
-  jobs                Job[]
+  jobs Job[]
 
   @@map("clients")
 }
@@ -109,16 +109,16 @@ model Client {
 // ─── Embeddings ───────────────────────────────────────────────
 
 model Embedding {
-  id           String   @id @default(uuid()) @db.Uuid
-  entityType   String   @map("entity_type")
-  entityId     String   @map("entity_id") @db.Uuid
-  purpose      String
-  vector       Unsupported("float[]")
-  model        String   @default("text-embedding-3-small")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id         String                 @id @default(uuid()) @db.Uuid
+  entityType String                 @map("entity_type")
+  entityId   String                 @map("entity_id") @db.Uuid
+  purpose    String
+  vector     Unsupported("float[]")
+  model      String                 @default("text-embedding-3-small")
+  createdAt  DateTime               @default(now()) @map("created_at")
 
-  candidate    Candidate? @relation(fields: [entityId], references: [id], onDelete: Cascade, map: "embeddings_candidate_id_fkey")
-  job          Job?       @relation(fields: [entityId], references: [id], onDelete: Cascade, map: "embeddings_job_id_fkey")
+  candidate Candidate? @relation(fields: [entityId], references: [id], onDelete: Cascade, map: "embeddings_candidate_id_fkey")
+  job       Job?       @relation(fields: [entityId], references: [id], onDelete: Cascade, map: "embeddings_job_id_fkey")
 
   @@unique([entityType, entityId, purpose])
   @@index([entityType, entityId])
@@ -128,29 +128,29 @@ model Embedding {
 // ─── Ranked Candidates ────────────────────────────────────────
 
 model RankedCandidate {
-  id               String    @id @default(uuid()) @db.Uuid
-  jobId            String    @map("job_id") @db.Uuid
-  candidateId      String    @map("candidate_id") @db.Uuid
-  semanticScore    Float     @default(0) @map("semantic_score")
-  skillScore       Float     @default(0) @map("skill_score")
-  experienceScore  Float     @default(0) @map("experience_score")
-  educationScore   Float     @default(0) @map("education_score")
-  clientFitScore   Float     @default(0) @map("client_fit_score")
-  totalScore       Float     @default(0) @map("total_score")
-  exactMatches     String[]  @default([]) @map("exact_matches")
-  semanticMatches  String[]  @default([]) @map("semantic_matches")
-  missingSkills    String[]  @default([]) @map("missing_skills")
-  avoidSignals     String[]  @default([]) @map("avoid_signals")
-  explanation      String?
-  llmScore         Float     @default(0) @map("llm_score")
-  llmVerdict       String?   @map("llm_verdict")
-  llmReasoning     String?   @map("llm_reasoning")
-  atsScore         Int?      @map("ats_score")
-  decision         String    @default("pending")
-  createdAt        DateTime  @default(now()) @map("created_at")
+  id              String   @id @default(uuid()) @db.Uuid
+  jobId           String   @map("job_id") @db.Uuid
+  candidateId     String   @map("candidate_id") @db.Uuid
+  semanticScore   Float    @default(0) @map("semantic_score")
+  skillScore      Float    @default(0) @map("skill_score")
+  experienceScore Float    @default(0) @map("experience_score")
+  educationScore  Float    @default(0) @map("education_score")
+  clientFitScore  Float    @default(0) @map("client_fit_score")
+  totalScore      Float    @default(0) @map("total_score")
+  exactMatches    String[] @default([]) @map("exact_matches")
+  semanticMatches String[] @default([]) @map("semantic_matches")
+  missingSkills   String[] @default([]) @map("missing_skills")
+  avoidSignals    String[] @default([]) @map("avoid_signals")
+  explanation     String?
+  llmScore        Float    @default(0) @map("llm_score")
+  llmVerdict      String?  @map("llm_verdict")
+  llmReasoning    String?  @map("llm_reasoning")
+  atsScore        Int?     @map("ats_score")
+  decision        String   @default("pending")
+  createdAt       DateTime @default(now()) @map("created_at")
 
-  job              Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  candidate        Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  job       Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  candidate Candidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
 
   @@unique([jobId, candidateId])
   @@index([jobId, totalScore(sort: Desc)])
@@ -218,4 +218,31 @@ model ProcessingStatus {
 
   @@unique([entityType, entityId, stage])
   @@map("processing_status")
+}
+
+// ─── Settings (key-value config) ──────────────────────────────
+
+model Setting {
+  key       String   @id
+  value     Json     @default("true")
+  updatedAt DateTime @default(now()) @map("updated_at")
+
+  @@map("settings")
+}
+
+// ─── Search History ───────────────────────────────────────────
+
+model SearchHistory {
+  id           String   @id @default(uuid()) @db.Uuid
+  source       String
+  query        String
+  filters      Json?
+  resultCount  Int      @default(0) @map("result_count")
+  savedCount   Int      @default(0) @map("saved_count")
+  candidateIds String[] @default([]) @map("candidate_ids")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([source])
+  @@index([createdAt(sort: Desc)])
+  @@map("search_history")
 }

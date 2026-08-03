@@ -5,16 +5,21 @@ export const settingsRouter = Router()
 
 // In-memory cache (fast reads, reset on server restart)
 const settingsCache = new Map<string, boolean>()
+let lastLoadTime = 0
+const CACHE_TTL_MS = 30_000 // Refresh from DB every 30 seconds
 
-async function loadSettings() {
+async function loadSettings(force = false) {
+  const now = Date.now()
+  if (!force && now - lastLoadTime < CACHE_TTL_MS) return
   const rows = await pool.query('SELECT key, value FROM settings')
   for (const row of rows.rows) {
     settingsCache.set(row.key, row.value === true || row.value === 'true')
   }
+  lastLoadTime = now
 }
 
 // Load on startup
-loadSettings().catch(() => {})
+loadSettings(true).catch(() => {})
 
 // ─── Get All Settings ────────────────────────────────────────
 
@@ -26,7 +31,7 @@ settingsRouter.get('/', async (_req: Request, res: Response) => {
       auto_sync_jds: settingsCache.get('auto_sync_jds') ?? true,
     })
   } catch (error) {
-    res.status(500).json({ error: String(error) })
+    res.status(500).json({ error: 'Failed to load settings' })
   }
 })
 
@@ -41,7 +46,7 @@ settingsRouter.get('/:key', async (req: Request, res: Response) => {
     await loadSettings()
     res.json({ key, value: settingsCache.get(key) ?? true })
   } catch (error) {
-    res.status(500).json({ error: String(error) })
+    res.status(500).json({ error: 'Failed to load setting' })
   }
 })
 
@@ -66,10 +71,11 @@ settingsRouter.patch('/:key', async (req: Request, res: Response) => {
     )
 
     settingsCache.set(key, value)
+    lastLoadTime = Date.now()
     console.log(`[Settings] ${key} = ${value}`)
     res.json({ key, value })
   } catch (error) {
-    res.status(500).json({ error: String(error) })
+    res.status(500).json({ error: 'Failed to update setting' })
   }
 })
 
@@ -77,5 +83,5 @@ settingsRouter.patch('/:key', async (req: Request, res: Response) => {
 
 export function isAutoSyncEnabled(type: 'resumes' | 'jds'): boolean {
   const key = type === 'resumes' ? 'auto_sync_resumes' : 'auto_sync_jds'
-  return settingsCache.get(key) ?? false
+  return settingsCache.get(key) ?? true
 }

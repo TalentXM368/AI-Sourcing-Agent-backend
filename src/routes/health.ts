@@ -1,6 +1,5 @@
 import { Router } from 'express'
 import { db } from '../db/index.js'
-import { sql } from 'kysely'
 
 export const healthRouter = Router()
 

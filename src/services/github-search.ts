@@ -27,6 +27,7 @@ export interface GithubUser {
 }
 
 const CONCURRENCY = 10
+const FETCH_TIMEOUT_MS = 15_000
 
 function getHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
@@ -53,7 +54,10 @@ function buildSearchQuery(filters: GithubSearchFilters): string {
 }
 
 async function fetchJson(url: string): Promise<any> {
-  const res = await fetch(url, { headers: getHeaders() })
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  const res = await fetch(url, { headers: getHeaders(), signal: controller.signal })
+  clearTimeout(timeout)
 
   if (res.status === 403) {
     const reset = res.headers.get('x-ratelimit-reset')
@@ -61,7 +65,10 @@ async function fetchJson(url: string): Promise<any> {
       const waitMs = Math.max(0, Number(reset) * 1000 - Date.now()) + 1000
       if (waitMs < 15000) {
         await new Promise(r => setTimeout(r, waitMs))
-        const retry = await fetch(url, { headers: getHeaders() })
+        const controller2 = new AbortController()
+        const timeout2 = setTimeout(() => controller2.abort(), FETCH_TIMEOUT_MS)
+        const retry = await fetch(url, { headers: getHeaders(), signal: controller2.signal })
+        clearTimeout(timeout2)
         if (!retry.ok) throw new Error(`GitHub API: ${retry.status}`)
         return retry.json()
       }

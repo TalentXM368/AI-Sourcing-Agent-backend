@@ -1,8 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { z } from 'zod'
 import { db, pool } from '../db/index.js'
-import { randomUUID } from 'crypto'
-import { createHash } from 'crypto'
+import { randomUUID, createHash, timingSafeEqual } from 'crypto'
 import { extractTextFromBuffer, detectMimetype } from '../parsers/text-extractor.js'
 import { parseResume } from '../parsers/resume-parser.js'
 import { parseJobDescription } from '../parsers/jd-parser.js'
@@ -13,6 +12,7 @@ import { matchCandidateToAllJobs, matchJobToAllCandidates } from '../scoring/ind
 import { classifyRegion } from '../services/region-classifier.js'
 import { classifyIndustry } from '../services/industry-classifier.js'
 import { isAutoSyncEnabled } from './settings.js'
+import { indexCandidateToQdrant } from '../utils/qdrant-indexing.js'
 
 export const webhooksRouter = Router()
 
@@ -132,6 +132,18 @@ async function handleResume(url: string, zohoId?: string) {
         [randomUUID(), candidateId, purpose, vector]
       )
     }
+
+    // 7b. Index into Qdrant for semantic search
+    await indexCandidateToQdrant({
+      candidateId,
+      name: parsed.name,
+      fullVector: fullVec,
+      skills: skillNames,
+      headline: parsed.headline || undefined,
+      location: parsed.location || undefined,
+      experienceYears: parsed.experience_years || undefined,
+      industry: industryResult.industry || undefined,
+    })
 
     // 8. Match against ALL existing jobs
     await matchCandidateToAllJobs(candidateId)
@@ -295,7 +307,6 @@ function verifyCloudinarySignature(body: string, signature: string, timestamp: s
     .digest('hex')
 
   // Use timing-safe comparison to prevent timing attacks
-  const { timingSafeEqual } = require('crypto')
   if (expectedSig.length !== signature.length) return false
   return timingSafeEqual(Buffer.from(expectedSig), Buffer.from(signature))
 }
@@ -501,10 +512,23 @@ async function processCloudinaryResume(url: string, publicId: string) {
     for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
       await pool.query(
         `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-         VALUES ($1, 'candidate', $2, $3, $4, 'text-embedding-3-small', NOW())`,
+         VALUES ($1, 'candidate', $2, $3, $4, 'text-embedding-3-small', NOW())
+         ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4, model = 'text-embedding-3-small'`,
         [randomUUID(), candidateId, purpose, vector]
       )
     }
+
+    // Index into Qdrant for semantic search
+    await indexCandidateToQdrant({
+      candidateId,
+      name: candidateName,
+      fullVector: fullVec,
+      skills: skillNames,
+      headline: parsed.headline || undefined,
+      location: parsed.location || undefined,
+      experienceYears: parsed.experience_years || undefined,
+      industry: industryResult.industry || undefined,
+    })
 
     // Match against all jobs
     await matchCandidateToAllJobs(candidateId)
@@ -522,21 +546,14 @@ async function processCloudinaryResume(url: string, publicId: string) {
 // ─── Process JD from Cloudinary Webhook ───────────────────────
 
 async function processCloudinaryJD(url: string, publicId: string) {
-  // Dedup check
-  const existing = await db.selectFrom('jobs')
-    .select('id')
-    .where('raw_text', 'is not', null)
-    .executeTakeFirst()
-  if (existing) {
-    // Simple dedup — check if a job with same source already exists
-    const jobExists = await pool.query(
-      `SELECT id FROM jobs WHERE description LIKE $1 LIMIT 1`,
-      [`%${publicId}%`]
-    )
-    if (jobExists.rows.length > 0) {
-      console.log(`[Cloudinary Webhook] JD already ingested: ${publicId}`)
-      return
-    }
+  // Dedup check — look for a job whose raw_text contains this publicId
+  const jobExists = await pool.query(
+    `SELECT id FROM jobs WHERE raw_text LIKE $1 LIMIT 1`,
+    [`%${publicId}%`]
+  )
+  if (jobExists.rows.length > 0) {
+    console.log(`[Cloudinary Webhook] JD already ingested: ${publicId}`)
+    return
   }
 
   const jobId = randomUUID()

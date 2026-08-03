@@ -69,6 +69,8 @@ export function getSignedUrl(publicId: string): string {
 // ─── Fetch File from Cloudinary (via archive download) ────────
 
 export async function fetchFromCloudinary(url: string, publicId?: string): Promise<Buffer> {
+  const FETCH_TIMEOUT_MS = 30_000
+
   try {
     if (publicId) {
       const archiveUrl = cloudinary.utils.download_archive_url({
@@ -78,7 +80,10 @@ export async function fetchFromCloudinary(url: string, publicId?: string): Promi
         expires_at: Math.floor(Date.now() / 1000) + 3600,
       })
 
-      const response = await fetch(archiveUrl)
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+      const response = await fetch(archiveUrl, { signal: controller.signal })
+      clearTimeout(timeout)
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`)
       }
@@ -94,13 +99,17 @@ export async function fetchFromCloudinary(url: string, publicId?: string): Promi
       return entries[0].getData()
     }
 
-    const response = await fetch(url)
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+    const response = await fetch(url, { signal: controller.signal })
+    clearTimeout(timeout)
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`)
     }
     const arrayBuffer = await response.arrayBuffer()
     return Buffer.from(arrayBuffer)
-  } catch (error) {
+  } catch (error: any) {
+    if (error.name === 'AbortError') throw new Error('Cloudinary fetch timed out')
     console.error('[Cloudinary] Fetch failed:', error)
     throw error
   }

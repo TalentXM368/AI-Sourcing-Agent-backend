@@ -15,6 +15,7 @@ import { classifyIndustry } from '../services/industry-classifier.js'
 import { extractWithDocumentIntelligence, checkDocumentIntelligenceHealth, ensureDocumentIntelligenceRunning } from '../services/document-intelligence.js'
 import { runFullCandidatePipeline } from '../services/candidate-pipeline.js'
 import { runFullJobPipeline } from '../services/jd-pipeline.js'
+import { indexCandidateToQdrant } from '../utils/qdrant-indexing.js'
 
 export const uploadRouter = Router()
 
@@ -275,6 +276,17 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
               { purpose: 'skills', vector: skillsVec },
               { purpose: 'role', vector: roleVec },
             ])
+            // Index into Qdrant for semantic search
+            await indexCandidateToQdrant({
+              candidateId,
+              name: candidateName,
+              fullVector: fullVec,
+              skills: skillNames,
+              headline: parsed.headline || undefined,
+              location: parsed.location || undefined,
+              experienceYears: parsed.experience_years || undefined,
+              industry: industryResult.industry || undefined,
+            })
           } catch {
             // Non-critical
           }
@@ -601,6 +613,17 @@ async function processFilesInBackground(
             { purpose: 'skills', vector: skillsVec },
             { purpose: 'role', vector: roleVec },
           ])
+          // Index into Qdrant for semantic search
+          await indexCandidateToQdrant({
+            candidateId,
+            name: candidateName,
+            fullVector: fullVec,
+            skills: skillNames,
+            headline: parsed.headline || undefined,
+            location: parsed.location || undefined,
+            experienceYears: parsed.experience_years || undefined,
+            industry: industryResult.industry || undefined,
+          })
         } catch {
           // Non-critical
         }
@@ -755,6 +778,18 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
       { purpose: 'role', vector: roleVec },
     ])
 
+    // Index into Qdrant for semantic search
+    await indexCandidateToQdrant({
+      candidateId,
+      name: candidateName,
+      fullVector: fullVec,
+      skills: skillNames,
+      headline: parsed.headline || undefined,
+      location: parsed.location || undefined,
+      experienceYears: parsed.experience_years || undefined,
+      industry: industryResult.industry || undefined,
+    })
+
     // Re-match against all jobs
     await matchCandidateToAllJobs(candidateId)
 
@@ -889,6 +924,17 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
           { purpose: 'skills', vector: skillsVec },
           { purpose: 'role', vector: roleVec },
         ])
+
+        // Index into Qdrant for semantic search
+        await indexCandidateToQdrant({
+          candidateId: candidate.id,
+          name: candidateName,
+          fullVector: fullVec,
+          skills: parsed.skills.map((s: any) => s.name || s),
+          headline: parsed.headline || undefined,
+          location: parsed.location || undefined,
+          experienceYears: parsed.experience_years || undefined,
+        })
 
         // Re-match
         await matchCandidateToAllJobs(candidate.id)
@@ -1329,6 +1375,17 @@ uploadRouter.post('/reparse-all', async (req: Request, res: Response) => {
           { purpose: 'role', vector: roleVec },
         ])
 
+        // Index into Qdrant for semantic search
+        await indexCandidateToQdrant({
+          candidateId: candidate.id,
+          name: candidateName,
+          fullVector: fullVec,
+          skills: parsed.skills.map((s: any) => s.name || s),
+          headline: parsed.headline || undefined,
+          location: parsed.location || undefined,
+          experienceYears: parsed.experience_years || undefined,
+        })
+
         // Re-match against all jobs
         await matchCandidateToAllJobs(candidate.id)
 
@@ -1439,6 +1496,17 @@ uploadRouter.post('/reparse-fast', async (req: Request, res: Response) => {
             { purpose: 'skills', vector: skillsVec },
             { purpose: 'role', vector: roleVec },
           ])
+
+          // Index into Qdrant for semantic search
+          await indexCandidateToQdrant({
+            candidateId: candidate.id,
+            name: candidateName,
+            fullVector: fullVec,
+            skills: parsed.skills.map((s: any) => s.name || s),
+            headline: parsed.headline || undefined,
+            location: parsed.location || undefined,
+            experienceYears: parsed.experience_years || undefined,
+          })
         }
 
         // Re-match against all jobs (skip if skipEmbeddings)
@@ -1558,6 +1626,18 @@ uploadRouter.post('/reparse-groq', async (req: Request, res: Response) => {
           { purpose: 'skills', vector: skillsVec },
           { purpose: 'role', vector: roleVec },
         ])
+
+        // Index into Qdrant for semantic search
+        await indexCandidateToQdrant({
+          candidateId: candidate.id,
+          name: candidateName,
+          fullVector: fullVec,
+          skills: skillNames,
+          headline: parsed.headline || undefined,
+          location: parsed.location || undefined,
+          experienceYears: parsed.experience_years || undefined,
+          industry: industryResult?.industry || undefined,
+        })
 
         await matchCandidateToAllJobs(candidate.id)
 

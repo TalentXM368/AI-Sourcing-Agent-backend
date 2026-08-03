@@ -47,7 +47,8 @@ function getHeaders(): Record<string, string> {
 let lastRequestTime = 0
 const MIN_REQUEST_INTERVAL = 200 // 200ms between requests = ~5 req/sec
 
-async function throttledFetch(url: string): Promise<any> {
+async function throttledFetch(url: string, retryCount = 0): Promise<any> {
+  const MAX_RETRIES = 3
   const now = Date.now()
   const elapsed = now - lastRequestTime
   if (elapsed < MIN_REQUEST_INTERVAL) {
@@ -55,12 +56,16 @@ async function throttledFetch(url: string): Promise<any> {
   }
   lastRequestTime = Date.now()
 
-  const res = await fetch(url, { headers: getHeaders() })
+  const res = await fetch(url, { headers: getHeaders(), signal: AbortSignal.timeout(15_000) })
 
   if (res.status === 429) {
-    console.log('[Kaggle] Rate limited, waiting 10s...')
+    if (retryCount >= MAX_RETRIES) {
+      console.error(`[Kaggle] Rate limited ${MAX_RETRIES} times, giving up`)
+      throw new Error(`Kaggle API: rate limited after ${MAX_RETRIES} retries`)
+    }
+    console.log(`[Kaggle] Rate limited, waiting 10s (retry ${retryCount + 1}/${MAX_RETRIES})...`)
     await new Promise(r => setTimeout(r, 10000))
-    return throttledFetch(url)
+    return throttledFetch(url, retryCount + 1)
   }
 
   if (!res.ok) {

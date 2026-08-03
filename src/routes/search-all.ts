@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { db, pool } from '../db/index.js'
 import { randomUUID } from 'crypto'
 import { searchAllProviders } from '../services/search-orchestrator.js'
+import { generateEmbeddings } from '../services/openai.js'
 
 export const searchAllRouter = Router()
 
@@ -81,6 +82,34 @@ searchAllRouter.post('/search-all', async (req: Request, res: Response) => {
             .where('id', '=', existing.id)
             .execute()
           saved.push(existing.id)
+
+          // Generate embeddings asynchronously (non-blocking)
+          const candidateId = existing.id
+          const fullText = `${candidate.name} ${headline || ''} ${candidate.location || ''} ${candidate.skills.join(' ')}`
+          generateEmbeddings([fullText, candidate.skills.join(' '), headline || candidate.name])
+            .then(([fullVec, skillsVec, roleVec]) => {
+              return Promise.all([
+                pool.query(
+                  `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+                   VALUES ($1, 'candidate', $2, 'full_text', $3, 'text-embedding-3-small', NOW())
+                   ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = 'text-embedding-3-small'`,
+                  [randomUUID(), candidateId, fullVec]
+                ),
+                pool.query(
+                  `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+                   VALUES ($1, 'candidate', $2, 'skills', $3, 'text-embedding-3-small', NOW())
+                   ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = 'text-embedding-3-small'`,
+                  [randomUUID(), candidateId, skillsVec]
+                ),
+                pool.query(
+                  `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+                   VALUES ($1, 'candidate', $2, 'role', $3, 'text-embedding-3-small', NOW())
+                   ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = 'text-embedding-3-small'`,
+                  [randomUUID(), candidateId, roleVec]
+                ),
+              ])
+            })
+            .catch(err => console.error(`[SearchAll] Embedding failed for ${candidate.name}:`, err.message))
         } else {
           const now = new Date()
           const newId = randomUUID()
@@ -103,6 +132,33 @@ searchAllRouter.post('/search-all', async (req: Request, res: Response) => {
             })
             .execute()
           saved.push(newId)
+
+          // Generate embeddings asynchronously (non-blocking)
+          const fullText = `${candidate.name} ${headline || ''} ${candidate.location || ''} ${candidate.skills.join(' ')}`
+          generateEmbeddings([fullText, candidate.skills.join(' '), headline || candidate.name])
+            .then(([fullVec, skillsVec, roleVec]) => {
+              return Promise.all([
+                pool.query(
+                  `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+                   VALUES ($1, 'candidate', $2, 'full_text', $3, 'text-embedding-3-small', NOW())
+                   ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = 'text-embedding-3-small'`,
+                  [randomUUID(), newId, fullVec]
+                ),
+                pool.query(
+                  `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+                   VALUES ($1, 'candidate', $2, 'skills', $3, 'text-embedding-3-small', NOW())
+                   ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = 'text-embedding-3-small'`,
+                  [randomUUID(), newId, skillsVec]
+                ),
+                pool.query(
+                  `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+                   VALUES ($1, 'candidate', $2, 'role', $3, 'text-embedding-3-small', NOW())
+                   ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = 'text-embedding-3-small'`,
+                  [randomUUID(), newId, roleVec]
+                ),
+              ])
+            })
+            .catch(err => console.error(`[SearchAll] Embedding failed for ${candidate.name}:`, err.message))
         }
       } catch (err: any) {
         console.error(`[SearchAll] Failed to upsert candidate ${candidate.name}:`, err.message)

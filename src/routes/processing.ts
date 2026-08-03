@@ -4,6 +4,22 @@ import { pool } from '../db/index.js';
 export function createProcessingRouter(): Router {
   const router = Router();
 
+  // GET /api/processing/active — must be before /:entityType/:entityId
+  router.get('/active', async (_req: Request, res: Response) => {
+    try {
+      const result = await pool.query(
+        `SELECT entity_type, entity_id, stage, status, progress, message, updated_at
+         FROM processing_status
+         WHERE status IN ('running', 'pending')
+         ORDER BY updated_at DESC
+         LIMIT 100`,
+      );
+      res.json({ active: result.rows });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to get active processing' });
+    }
+  });
+
   // GET /api/processing/:entityType/:entityId
   router.get('/:entityType/:entityId', async (req: Request, res: Response) => {
     try {
@@ -27,23 +43,7 @@ export function createProcessingRouter(): Router {
 
       res.json({ entityType, entityId, overallStatus, stages });
     } catch (error) {
-      res.status(500).json({ error: 'Failed to get processing status', message: error instanceof Error ? error.message : String(error) });
-    }
-  });
-
-  // GET /api/processing/active
-  router.get('/active', async (_req: Request, res: Response) => {
-    try {
-      const result = await pool.query(
-        `SELECT entity_type, entity_id, stage, status, progress, message, updated_at
-         FROM processing_status
-         WHERE status IN ('running', 'pending')
-         ORDER BY updated_at DESC
-         LIMIT 100`,
-      );
-      res.json({ active: result.rows });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to get active processing', message: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: 'Failed to get processing status' });
     }
   });
 
@@ -61,7 +61,7 @@ export function createProcessingRouter(): Router {
       );
       res.json({ runs: result.rows });
     } catch (error) {
-      res.status(500).json({ error: 'Failed to get pipeline history', message: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: 'Failed to get pipeline history' });
     }
   });
 

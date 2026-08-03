@@ -1,6 +1,21 @@
 import { parseBooleanQuery, hasBooleanOperators } from '../utils/boolean-parser.js'
 
 const SO_API = 'https://api.stackexchange.com/2.3'
+const FETCH_TIMEOUT_MS = 15_000
+
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, { signal: controller.signal })
+    clearTimeout(timeout)
+    return res
+  } catch (error: any) {
+    clearTimeout(timeout)
+    if (error.name === 'AbortError') throw new Error('StackOverflow API timed out')
+    throw error
+  }
+}
 
 export interface StackoverflowSearchFilters {
   tags: string
@@ -33,7 +48,7 @@ async function validateTags(tags: string[]): Promise<{ valid: string[]; invalid:
   const url = `${SO_API}/tags/${encodeURIComponent(tagList)}/info?site=stackoverflow`
 
   try {
-    const res = await fetch(url)
+    const res = await fetchWithTimeout(url)
     if (!res.ok) return { valid: [], invalid: tags }
 
     const data = await res.json() as { items?: Array<{ name: string }> }
@@ -85,7 +100,7 @@ export async function searchTags(query: string, size = 10): Promise<Array<{ name
       const tagList = validated.valid.join(';')
       const url = `${SO_API}/tags/${encodeURIComponent(tagList)}/info?site=stackoverflow`
       try {
-        const res = await fetch(url)
+        const res = await fetchWithTimeout(url)
         if (res.ok) {
           const data = await res.json() as { items?: Array<{ name: string; count: number }> }
           const items = (data.items || []).sort((a, b) => b.count - a.count).slice(0, size)
@@ -102,7 +117,7 @@ export async function searchTags(query: string, size = 10): Promise<Array<{ name
   for (const word of words) {
     const url = `${SO_API}/tags?order=desc&sort=popular&inname=${encodeURIComponent(word)}&site=stackoverflow&pagesize=${size}`
     try {
-      const res = await fetch(url)
+      const res = await fetchWithTimeout(url)
       if (!res.ok) continue
       const data = await res.json() as { items?: Array<{ name: string; count: number }> }
       for (const tag of data.items || []) {
@@ -117,7 +132,7 @@ export async function searchTags(query: string, size = 10): Promise<Array<{ name
   if (allResults.size === 0) {
     const url = `${SO_API}/tags?order=desc&sort=popular&inname=${encodeURIComponent(query)}&site=stackoverflow&pagesize=${size}`
     try {
-      const res = await fetch(url)
+      const res = await fetchWithTimeout(url)
       if (res.ok) {
         const data = await res.json() as { items?: Array<{ name: string; count: number }> }
         for (const tag of data.items || []) {
@@ -136,7 +151,7 @@ export async function searchTags(query: string, size = 10): Promise<Array<{ name
 
 async function getTopAnswerersByTag(tag: string): Promise<Array<{ user_id: number; display_name: string; reputation: number; link: string }>> {
   const url = `${SO_API}/tags/${encodeURIComponent(tag)}/top-answerers/all_time?site=stackoverflow&pagesize=100`
-  const res = await fetch(url)
+  const res = await fetchWithTimeout(url)
 
   if (!res.ok) {
     console.error(`[SO] Failed to fetch top answerers for tag "${tag}": ${res.status}`)
@@ -163,7 +178,7 @@ async function fetchUserProfiles(userIds: number[]): Promise<Map<number, any>> {
     const url = `${SO_API}/users/${ids}?site=stackoverflow`
 
     try {
-      const res = await fetch(url)
+      const res = await fetchWithTimeout(url)
       if (!res.ok) {
         console.error(`[SO] Failed to fetch user profiles: ${res.status}`)
         continue

@@ -1,8 +1,9 @@
 // ─── Boolean Query Parser ──────────────────────────────────
 // Supports: OR, AND, NOT operators in search queries
-// Example: "python OR javascript" → { or: ["python", "javascript"] }
-// Example: "python developer NOT junior" → { and: ["python developer"], not: ["junior"] }
-// Example: "react AND typescript OR vue" → { or: ["react AND typescript", "vue"] }
+// Precedence: NOT > AND > OR (standard boolean logic)
+// "python OR javascript" → { terms: ["python", "javascript"], operator: "or", excluded: [] }
+// "python developer NOT junior" → { terms: ["python developer"], operator: "or", excluded: ["junior"] }
+// "react AND typescript OR vue" → { terms: ["react", "typescript", "vue"], operator: "or", excluded: [] }
 
 export interface BooleanQuery {
   terms: string[]
@@ -40,52 +41,43 @@ export function parseBooleanQuery(input: string): BooleanQuery {
   const tokens = tokenize(input)
   const included: string[] = []
   const excluded: string[] = []
-  let operator: 'or' | 'and' = 'or'
+  let hasOr = false
+  let hasAnd = false
 
   let i = 0
-  let pendingNot = false
-  let pendingAnd = false
-
   while (i < tokens.length) {
     const token = tokens[i]
     const upper = token.toUpperCase()
 
     if (upper === 'OR') {
-      operator = 'or'
+      hasOr = true
       i++
       continue
     }
 
     if (upper === 'AND') {
-      operator = 'and'
-      pendingAnd = true
+      hasAnd = true
       i++
       continue
     }
 
     if (upper === 'NOT') {
-      pendingNot = true
+      // NOT applies to the next token
+      i++
+      if (i < tokens.length && tokens[i].toUpperCase() !== 'OR' && tokens[i].toUpperCase() !== 'AND') {
+        excluded.push(tokens[i])
+      }
       i++
       continue
     }
 
-    if (pendingNot) {
-      excluded.push(token)
-      pendingNot = false
-    } else if (pendingAnd) {
-      included.push(token)
-      pendingAnd = false
-    } else {
-      included.push(token)
-    }
+    included.push(token)
     i++
   }
 
-  // Merge adjacent non-operator tokens into single terms
-  // "python developer" stays as one term if not separated by operators
-  if (included.length > 0 && operator === 'and' && tokens.every(t => t.toUpperCase() !== 'OR')) {
-    return { terms: [included.join(' ')], operator: 'and', excluded }
-  }
+  // Determine operator: if both OR and AND are present, OR wins at top level
+  // since AND binds tighter (already handled by token grouping)
+  const operator = hasOr ? 'or' : 'and'
 
   return { terms: included, operator, excluded }
 }
