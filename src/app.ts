@@ -14,6 +14,7 @@ import { stackoverflowSearchRouter } from './routes/stackoverflow-search.js'
 import { kaggleSearchRouter } from './routes/kaggle-search.js'
 import { searchAllRouter } from './routes/search-all.js'
 import { searchHistoryRouter } from './routes/search-history.js'
+import { autocompleteRouter } from './routes/autocomplete.js'
 import { benchmarkRouter } from './routes/benchmark.js'
 import intelligenceRouter from './modules/candidate-intelligence/routes/intelligence.routes.js'
 import resolutionRouter from './modules/candidate-resolution/routes/resolution.routes.js'
@@ -63,6 +64,7 @@ app.use('/api/candidates', stackoverflowSearchRouter)
 app.use('/api/candidates', kaggleSearchRouter)
 app.use('/api/candidates', searchAllRouter)
 app.use('/api', searchHistoryRouter)
+app.use('/api/autocomplete', autocompleteRouter)
 app.use('/api/candidates', candidatesRouter)
 app.use('/api/clients', clientsRouter)
 app.use('/api/upload', uploadRouter)

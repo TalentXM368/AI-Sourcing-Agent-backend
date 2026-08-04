@@ -9,44 +9,53 @@ import { createVectorIntelligenceRouter } from './routes/vector-intelligence.rou
 
 let embeddingService: EmbeddingService | null = null;
 let reindexService: ReindexService | null = null;
+let qdrantManager: QdrantManager | null = null;
 let initialized = false;
+let initializing: Promise<void> | null = null;
 
-export function createVectorIntelligenceServices() {
-  const provider = getDefaultEmbeddingProvider();
-  const qdrantManager = new QdrantManager();
-  const indexer = new QdrantIndexer(qdrantManager);
-  const searcher = new QdrantSearcher(qdrantManager);
-  const queue = getGlobalQueue();
+function ensureServices() {
+  if (!embeddingService || !reindexService || !qdrantManager) {
+    const provider = getDefaultEmbeddingProvider();
+    qdrantManager = new QdrantManager();
+    const indexer = new QdrantIndexer(qdrantManager);
+    const searcher = new QdrantSearcher(qdrantManager);
+    const queue = getGlobalQueue();
 
-  embeddingService = new EmbeddingService(provider, queue, indexer, searcher, qdrantManager);
-  reindexService = new ReindexService(provider, indexer, qdrantManager);
-
-  return { embeddingService, reindexService, qdrantManager };
+    embeddingService = new EmbeddingService(provider, queue, indexer, searcher, qdrantManager);
+    reindexService = new ReindexService(provider, indexer, qdrantManager);
+  }
 }
 
 export function getVectorIntelligenceRouter() {
-  const { embeddingService: es, reindexService: rs } = createVectorIntelligenceServices();
-  return createVectorIntelligenceRouter(es, rs);
+  ensureServices();
+  return createVectorIntelligenceRouter(embeddingService!, reindexService!);
 }
 
 export async function initializeVectorIntelligence(): Promise<void> {
   if (initialized) return;
+  if (initializing) return initializing;
 
-  try {
-    const { qdrantManager } = createVectorIntelligenceServices();
-    await qdrantManager.initialize();
-    initialized = true;
-    console.log('[VectorIntelligence] Qdrant initialized successfully');
-  } catch (error) {
-    console.warn('[VectorIntelligence] Qdrant initialization failed (will retry on first use):', error);
-  }
+  initializing = (async () => {
+    try {
+      ensureServices();
+      await qdrantManager!.initialize();
+      initialized = true;
+      console.log('[VectorIntelligence] Qdrant initialized successfully');
+    } catch (error) {
+      console.warn('[VectorIntelligence] Qdrant initialization failed (will retry on first use):', error);
+    }
+  })();
+
+  return initializing;
 }
 
 export function getEmbeddingService(): EmbeddingService | null {
+  ensureServices();
   return embeddingService;
 }
 
 export function getReindexService(): ReindexService | null {
+  ensureServices();
   return reindexService;
 }
 
