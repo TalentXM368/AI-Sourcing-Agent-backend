@@ -391,6 +391,9 @@ export async function searchAllProviders(filters: AllSearchFilters): Promise<All
   const searchPromises: Promise<{ source: string; result: any }>[] = []
 
   if (providers.includes('pdl')) {
+    // Cap PDL size to 25 to avoid hitting monthly quota with large requests
+    // The service auto-retries with smaller sizes on 402, but starting smaller is safer
+    const pdlSize = Math.min(size, 25)
     searchPromises.push(
       searchPersons({
         jobTitle: filters.jobTitle,
@@ -399,7 +402,7 @@ export async function searchAllProviders(filters: AllSearchFilters): Promise<All
         industry: filters.industry,
         experience: filters.experience,
         keywords: filters.keywords,
-        size,
+        size: pdlSize,
       }).then(r => ({ source: 'pdl', result: r })).catch(e => {
         console.error('[SearchAll] PDL failed:', e.message)
         return { source: 'pdl', result: { candidates: [], total: 0, scrollToken: null } }

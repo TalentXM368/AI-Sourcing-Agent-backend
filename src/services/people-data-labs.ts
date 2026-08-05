@@ -279,7 +279,11 @@ export async function searchPersons(
 
   // Try the full query first, with automatic size reduction on 402
   let result: { data: any[]; total: number; scrollToken: string | null } | null = null
-  const sizesToTry = requestedSize === 100 ? [100, 50, 25, 10] : requestedSize === 50 ? [50, 25, 10] : [requestedSize]
+  // Always build a full fallback chain so ANY size gets retried with smaller sizes on 402
+  const sizesToTry = requestedSize >= 100 ? [100, 50, 25, 10]
+    : requestedSize >= 50 ? [50, 25, 10]
+    : requestedSize >= 25 ? [25, 10]
+    : [requestedSize]
 
   for (const size of sizesToTry) {
     try {
@@ -295,7 +299,7 @@ export async function searchPersons(
   }
 
   if (!result) {
-    throw new PdlError('PDL API quota exceeded. Try reducing "Results per search" to 10 or wait for your monthly quota to reset.', 402)
+    throw new PdlError('PDL API monthly quota exceeded. Your plan\'s monthly search limit has been reached. Wait for your quota to reset or upgrade your PDL plan at peopledatalabs.com.', 402)
   }
 
   // If 0 results, try progressively relaxed queries
