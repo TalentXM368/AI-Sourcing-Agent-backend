@@ -3,9 +3,43 @@
 // Docs: https://docs.peopledatalabs.com/docs/person-search-api
 
 import { parseBooleanQuery, hasBooleanOperators } from '../utils/boolean-parser.js'
+import { getApiKey } from './api-key-store.js'
 
 const PDL_API_URL = 'https://api.peopledatalabs.com/v5/person/search'
 const PDL_TIMEOUT_MS = 15000
+
+// ─── Quota Exhaustion Tracker ────────────────────────────────
+// Tracks when PDL quota is exhausted to avoid wasted API calls
+// Resets after 24 hours (monthly quota typically resets on calendar month)
+
+let quotaExhaustedAt: number | null = null
+const QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000 // 24 hours
+
+export function isPdlQuotaExhausted(): boolean {
+  if (!quotaExhaustedAt) return false
+  if (Date.now() - quotaExhaustedAt > QUOTA_COOLDOWN_MS) {
+    quotaExhaustedAt = null // Auto-reset after 24h
+    return false
+  }
+  return true
+}
+
+export function markPdlQuotaExhausted(): void {
+  quotaExhaustedAt = Date.now()
+  console.log('[PDL] Quota marked as exhausted — skipping PDL for 24 hours')
+}
+
+export function resetPdlQuota(): void {
+  quotaExhaustedAt = null
+  console.log('[PDL] Quota exhaustion manually cleared')
+}
+
+export function getPdlQuotaStatus(): { exhausted: boolean; since: string | null; resetsAt: string | null } {
+  if (!quotaExhaustedAt) return { exhausted: false, since: null, resetsAt: null }
+  const since = new Date(quotaExhaustedAt).toISOString()
+  const resetsAt = new Date(quotaExhaustedAt + QUOTA_COOLDOWN_MS).toISOString()
+  return { exhausted: true, since, resetsAt }
+}
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -269,9 +303,14 @@ async function executePdlQuery(
 export async function searchPersons(
   filters: PdlSearchFilters,
 ): Promise<PdlSearchResult> {
-  const apiKey = process.env.PEOPLE_DATA_LABS_API_KEY
+  const apiKey = await getApiKey('pdl')
   if (!apiKey) {
     throw new PdlError('PDL API key not configured', 500)
+  }
+
+  // Skip PDL entirely if quota is known to be exhausted
+  if (isPdlQuotaExhausted()) {
+    throw new PdlError('PDL API monthly quota exhausted. Using other providers. Quota resets next month or try again in 24h.', 402)
   }
 
   const requestedSize = Math.min(Math.max(filters.size || 25, 1), 100)
@@ -294,11 +333,16 @@ export async function searchPersons(
         console.log(`[PDL] Quota hit at size=${size}, retrying with smaller size...`)
         continue
       }
+      // Mark quota exhausted on any 402 so future calls skip entirely
+      if (err instanceof PdlError && err.statusCode === 402) {
+        markPdlQuotaExhausted()
+      }
       throw err
     }
   }
 
   if (!result) {
+    markPdlQuotaExhausted()
     throw new PdlError('PDL API monthly quota exceeded. Your plan\'s monthly search limit has been reached. Wait for your quota to reset or upgrade your PDL plan at peopledatalabs.com.', 402)
   }
 

@@ -28,6 +28,7 @@ export interface QdrantCondition {
   key: string;
   match?: { value: string | number | boolean } | { keyword: string[] };
   range?: { gte?: number; lte?: number; gt?: number; lt?: number };
+  has_id?: (string | number)[];
 }
 
 export interface CollectionConfig {

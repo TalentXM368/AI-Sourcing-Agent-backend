@@ -1,4 +1,5 @@
 import { parseBooleanQuery, hasBooleanOperators } from '../utils/boolean-parser.js'
+import { getApiKey } from './api-key-store.js'
 
 const KAGGLE_API = 'https://www.kaggle.com/api/v1'
 
@@ -24,17 +25,17 @@ export interface KaggleUser {
 
 // ─── Auth ────────────────────────────────────────────────────
 
-function getAuth(): { username: string; key: string } {
-  const username = process.env.KAGGLE_USERNAME
-  const key = process.env.KAGGLE_KEY
+async function getAuth(): Promise<{ username: string; key: string }> {
+  const username = await getApiKey('kaggle_username')
+  const key = await getApiKey('kaggle_key')
   if (!username || !key) {
     throw new Error('Kaggle API credentials not configured. Set KAGGLE_USERNAME and KAGGLE_KEY in .env')
   }
   return { username, key }
 }
 
-function getHeaders(): Record<string, string> {
-  const { username, key } = getAuth()
+async function getHeaders(): Promise<Record<string, string>> {
+  const { username, key } = await getAuth()
   const token = Buffer.from(`${username}:${key}`).toString('base64')
   return {
     'Authorization': `Basic ${token}`,
@@ -56,7 +57,7 @@ async function throttledFetch(url: string, retryCount = 0): Promise<any> {
   }
   lastRequestTime = Date.now()
 
-  const res = await fetch(url, { headers: getHeaders(), signal: AbortSignal.timeout(15_000) })
+  const res = await fetch(url, { headers: await getHeaders(), signal: AbortSignal.timeout(15_000) })
 
   if (res.status === 429) {
     if (retryCount >= MAX_RETRIES) {

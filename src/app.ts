@@ -12,7 +12,11 @@ import { pdlSearchRouter } from './routes/pdl-search.js'
 import { githubSearchRouter } from './routes/github-search.js'
 import { stackoverflowSearchRouter } from './routes/stackoverflow-search.js'
 import { kaggleSearchRouter } from './routes/kaggle-search.js'
+import { coresignalSearchRouter } from './routes/coresignal-search.js'
 import { searchAllRouter } from './routes/search-all.js'
+import { advancedSearchRouter } from './routes/advanced-search.js'
+import { resumeSearchRouter } from './routes/resume-search.js'
+import { pipelineRouter } from './routes/pipeline.js'
 import { searchHistoryRouter } from './routes/search-history.js'
 import { autocompleteRouter } from './routes/autocomplete.js'
 import { benchmarkRouter } from './routes/benchmark.js'
@@ -62,6 +66,7 @@ app.use('/api/candidates', pdlSearchRouter)
 app.use('/api/candidates', githubSearchRouter)
 app.use('/api/candidates', stackoverflowSearchRouter)
 app.use('/api/candidates', kaggleSearchRouter)
+app.use('/api/candidates', coresignalSearchRouter)
 app.use('/api/candidates', searchAllRouter)
 app.use('/api', searchHistoryRouter)
 app.use('/api/autocomplete', autocompleteRouter)
@@ -69,6 +74,9 @@ app.use('/api/candidates', candidatesRouter)
 app.use('/api/clients', clientsRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/settings', settingsRouter)
+app.use('/api', advancedSearchRouter)
+app.use('/api/candidates', resumeSearchRouter)
+app.use('/api/pipeline', pipelineRouter)
 
 // ─── Candidate Intelligence Layer ────────────────────────────
 app.use('/api/intelligence', intelligenceRouter)
@@ -138,6 +146,173 @@ pool.query(
   const reset = result.rowCount || 0
   if (reset > 0) console.log(`[App] Reset ${reset} stuck candidates on startup`)
 }).catch(() => {})
+
+// ─── Auto-Sync: Background Cloudinary Poller ─────────────────
+// Polls Cloudinary every 5 minutes for new resumes and auto-processes them
+const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes
+let autoSyncRunning = false
+
+async function autoSyncCloudinary() {
+  if (autoSyncRunning) return
+  autoSyncRunning = true
+  try {
+    const { listCloudinaryFolder } = await import('./services/cloudinary.js')
+    const { fetchFromCloudinary } = await import('./services/cloudinary.js')
+    const { extractTextFromBuffer, detectMimetype } = await import('./parsers/text-extractor.js')
+    const { parseResumeRegex } = await import('./parsers/resume-parser.js')
+    const { generateEmbeddings } = await import('./services/openai.js')
+    const { indexCandidateToQdrant } = await import('./utils/qdrant-indexing.js')
+    const { computeDataQuality } = await import('./scoring/data-quality.js')
+    const { classifyIndustry } = await import('./services/industry-classifier.js')
+    const { classifyRegion } = await import('./services/region-classifier.js')
+    const { isAutoSyncEnabled } = await import('./routes/settings.js')
+    const { extractWithDocumentIntelligence, checkDocumentIntelligenceHealth } = await import('./services/document-intelligence.js')
+    const { randomUUID } = await import('crypto')
+
+    if (!isAutoSyncEnabled('resumes')) {
+      console.log(`[AutoSync] Auto-sync disabled for resumes, skipping`)
+      return
+    }
+
+    const files = await listCloudinaryFolder('candidates/Resumes', 200)
+    if (files.length === 0) return
+
+    const existing = await pool.query(`SELECT source_file FROM candidates WHERE source = 'resume'`)
+    const existingUrls = new Set(existing.rows.map((r: any) => r.source_file))
+    const newFiles = files.filter(f => !existingUrls.has(f.secure_url))
+    if (newFiles.length === 0) {
+      console.log(`[AutoSync] Checked ${files.length} files, no new resumes`)
+      return
+    }
+
+    console.log(`[AutoSync] Found ${newFiles.length} new resumes to process`)
+    let diAvailable = await checkDocumentIntelligenceHealth()
+
+    const SECTION_HEADERS = new Set(['work experience', 'work history', 'professional summary', 'education', 'skills', 'projects', 'certifications', 'languages', 'contact', 'summary', 'objective', 'experience'])
+    function isValidPersonName(name: string): boolean {
+      if (!name || name.length < 2) return false
+      if (SECTION_HEADERS.has(name.toLowerCase().trim())) return false
+      if (/^\d+$/.test(name)) return false
+      return true
+    }
+    function extractNameFromFilename(publicId: string): string | undefined {
+      const basename = publicId.split('/').pop() || publicId
+      const withoutExt = basename.replace(/\.(pdf|docx?|txt)+$/i, '')
+      const parts = withoutExt.split('_')
+      if (parts.length >= 2) {
+        const name = parts.slice(1).join('_').trim()
+        if (name && name.length > 1 && !/^\d+$/.test(name)) return name
+      }
+      return undefined
+    }
+
+    for (const file of newFiles) {
+      const url = file.secure_url
+      const candidateId = randomUUID()
+      try {
+        await pool.query(
+          `INSERT INTO candidates (id, name, source_file, resume_url, parse_status, source, created_at, updated_at)
+           VALUES ($1, 'Processing...', $2, $2, 'processing', 'resume', NOW(), NOW())`,
+          [candidateId, url]
+        )
+
+        const pdfBuffer = await fetchFromCloudinary(url, file.public_id)
+        const mimetype = detectMimetype(file.public_id)
+
+        let text = ''
+        if (diAvailable) {
+          try {
+            const diResult = await extractWithDocumentIntelligence(pdfBuffer, mimetype, file.public_id)
+            if (diResult.text.length > 50) text = diResult.text
+          } catch {}
+        }
+        if (!text) {
+          try { text = await extractTextFromBuffer(pdfBuffer, mimetype) } catch { text = '' }
+        }
+
+        if (!text || text.length < 30) {
+          const nameFromFile = extractNameFromFilename(file.public_id)
+          if (nameFromFile) {
+            await pool.query(
+              `UPDATE candidates SET name = $1, parse_status = 'completed', parse_error = 'No extractable text', updated_at = NOW() WHERE id = $2`,
+              [nameFromFile, candidateId]
+            )
+          } else {
+            await pool.query(
+              `UPDATE candidates SET parse_status = 'failed', parse_error = 'No extractable text', updated_at = NOW() WHERE id = $2`,
+              [candidateId]
+            )
+          }
+          continue
+        }
+
+        const parsed = parseResumeRegex(text)
+        let candidateName = parsed.name
+        if (!isValidPersonName(candidateName)) {
+          const fromFile = extractNameFromFilename(file.public_id)
+          if (fromFile) candidateName = fromFile
+        }
+        if (!isValidPersonName(candidateName)) candidateName = file.public_id.split('/').pop()?.replace(/\.(pdf|docx?|txt)+$/i, '') || 'Unknown'
+
+        const quality = computeDataQuality(parsed as any)
+        const skillNames = parsed.skills.map((s: any) => s.name || s)
+        const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${text}`
+        const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+        const regionResult = classifyRegion(parsed.location || '')
+
+        await pool.query(
+          `UPDATE candidates SET name=$1, email=$2, phone=$3, linkedin_url=$4, github_url=$5, portfolio_url=$6,
+           headline=$7, location=$8, summary=$9, experience_years=$10, skills=$11, companies=$12, work_history=$13,
+           education=$14, projects=$15, certifications=$16, languages=$17, raw_text=$18, data_quality_score=$19,
+           missing_fields=$20, industry=$21, region=$22, parse_status='completed', parse_error=NULL, updated_at=NOW()
+           WHERE id=$23`,
+          [candidateName, parsed.email, parsed.phone, parsed.linkedin_url, parsed.github_url, parsed.portfolio_url,
+           parsed.headline, parsed.location, parsed.summary, parsed.experience_years,
+           JSON.stringify(parsed.skills), JSON.stringify(parsed.companies), JSON.stringify(parsed.work_history),
+           JSON.stringify(parsed.education), JSON.stringify(parsed.projects), JSON.stringify(parsed.certifications),
+           JSON.stringify(parsed.languages), text, quality.quality_score, JSON.stringify(quality.missing_fields),
+           industryResult.industry, regionResult, candidateId]
+        )
+
+        try {
+          const skillsText = skillNames.join(' ')
+          const roleText = parsed.headline || parsed.companies[0]?.title || ''
+          const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+          for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
+            await pool.query(
+              `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
+               VALUES ($1, 'candidate', $2, $3, $4, 'text-embedding-3-small', NOW())
+               ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4`,
+              [randomUUID(), candidateId, purpose, vector]
+            )
+          }
+          await indexCandidateToQdrant({
+            candidateId, name: candidateName, fullVector: fullVec,
+            skills: skillNames, headline: parsed.headline || undefined,
+            location: parsed.location || undefined, industry: industryResult.industry || undefined,
+          })
+        } catch {}
+
+        console.log(`[AutoSync] Ingested: ${candidateName}`)
+      } catch (error) {
+        await pool.query(
+          `UPDATE candidates SET parse_status='failed', parse_error=$1, updated_at=NOW() WHERE id=$2`,
+          [String(error).slice(0, 500), candidateId]
+        ).catch(() => {})
+      }
+    }
+    console.log(`[AutoSync] Processed ${newFiles.length} new resumes`)
+  } catch (err: any) {
+    console.error(`[AutoSync] Error:`, err.message)
+  } finally {
+    autoSyncRunning = false
+  }
+}
+
+// Start auto-sync polling
+setInterval(autoSyncCloudinary, AUTO_SYNC_INTERVAL_MS)
+// Run first check after 30 seconds
+setTimeout(autoSyncCloudinary, 30_000)
 
 // ─── 404 Handler ─────────────────────────────────────────────
 

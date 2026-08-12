@@ -40,6 +40,7 @@ export interface Database {
     region: string | null
     pdl_id: string | null
     so_id: string | null
+    coresignal_id: string | null
     source: string | undefined
     stage_updated_at: Date | null
     created_at: Date

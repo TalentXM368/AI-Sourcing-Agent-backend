@@ -8,9 +8,9 @@ export const autocompleteRouter = Router()
 interface Suggestion {
   value: string
   label: string
-  sublabel?: string   // e.g. "Programming Languages" for skills, "United Kingdom" for locations
+  sublabel?: string
   count: number
-  type: 'skill' | 'location' | 'job_title'
+  type: 'skill' | 'location' | 'job_title' | 'company' | 'school' | 'degree' | 'language' | 'industry' | 'region'
 }
 
 // ─── In-Memory Taxonomy (LinkedIn-style) ──────────────────────
@@ -456,6 +456,290 @@ const LOCATION_CANONICAL: Record<string, string> = {
   'on site': 'On-site',
 }
 
+// ─── Junk Filters ─────────────────────────────────────────────
+
+// Resume section headers that get mis-parsed as company names
+const RESUME_SECTION_HEADERS = new Set([
+  'responsibilities', 'key responsibilities', 'duties', 'responsibility',
+  'duration', 'summary', 'professional summary', 'career objective', 'objective',
+  'projects', 'project', 'work experience', 'work history', 'experience',
+  'professional experience', 'education', 'academic details', 'qualifications',
+  'skills', 'technical skills', 'additional skills', 'languages', 'certifications',
+  'courses', 'coursework', 'hobbies', 'interests', 'personal details',
+  'personal profile', 'profile', 'declaration', 'about', 'about me', 'contact',
+  'references', 'achievements', 'awards', 'memberships', 'volunteer', 'strengths',
+  'overview', 'key skills', 'highlights', 'areas of interest', 'trainings',
+  'internships', 'extracurricular', 'projects done', 'key contributions',
+  'project overview', 'job duties', 'duties', 'employment history',
+  'experience summary', 'work', 'employment', 'roles & responsibilities',
+  'roles and responsibilities', 'responsibilities & achievements',
+  'achievements', 'accomplishments',
+])
+
+// Known location/city/country names that should never be companies
+const KNOWN_LOCATION_NAMES = new Set<string>()
+for (const key of Object.keys(LOCATION_CANONICAL)) {
+  const city = key.split(/[,)]/)[0].trim()
+  if (city.length >= 2) KNOWN_LOCATION_NAMES.add(city)
+}
+for (const loc of LOCATION_TAXONOMY) {
+  const city = loc.split(/[,)]/)[0].trim().toLowerCase()
+  if (city.length >= 2) KNOWN_LOCATION_NAMES.add(city)
+}
+for (const place of [
+  // Countries / territories
+  'india', 'usa', 'us', 'uae', 'uk', 'gulf', 'abroad', 'remote', 'hybrid',
+  'onsite', 'on-site', 'work from home', 'wfh', 'ncr', 'home', 'city', 'location',
+  'united states', 'united states of america', 'america', 'canada', 'australia',
+  'united kingdom', 'england', 'scotland', 'wales', 'ireland', 'germany',
+  'france', 'netherlands', 'belgium', 'switzerland', 'austria', 'sweden',
+  'norway', 'denmark', 'finland', 'italy', 'spain', 'portugal', 'poland',
+  'czech republic', 'romania', 'hungary', 'greece', 'turkey', 'israel',
+  'uae', 'saudi arabia', 'qatar', 'kuwait', 'oman', 'jordan', 'bahrain',
+  'china', 'japan', 'south korea', 'taiwan', 'singapore', 'malaysia',
+  'thailand', 'vietnam', 'indonesia', 'philippines', 'hong kong', 'bangladesh',
+  'pakistan', 'sri lanka', 'nepal', 'bhutan', 'myanmar', 'cambodia', 'laos',
+  'australia', 'new zealand', 'brazil', 'mexico', 'argentina', 'chile',
+  'colombia', 'peru', 'venezuela', 'ecuador', 'costa rica', 'panama',
+  'south africa', 'nigeria', 'kenya', 'egypt', 'morocco', 'ethiopia',
+  'ghana', 'uganda', 'tanzania', 'zimbabwe', 'namibia', 'botswana',
+  'russia', 'ukraine', 'kazakhstan', 'uzbekistan',
+  // US states
+  'alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado',
+  'connecticut', 'delaware', 'florida', 'georgia', 'hawaii', 'idaho',
+  'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine',
+  'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi',
+  'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey',
+  'new mexico', 'new york', 'north carolina', 'north dakota', 'ohio',
+  'oklahoma', 'oregon', 'pennsylvania', 'rhode island', 'south carolina',
+  'south dakota', 'tennessee', 'texas', 'utah', 'vermont', 'virginia',
+  'washington', 'west virginia', 'wisconsin', 'wyoming',
+  // Indian states / UTs
+  'andhra pradesh', 'arunachal pradesh', 'assam', 'bihar', 'chhattisgarh',
+  'goa', 'gujarat', 'haryana', 'himachal pradesh', 'jharkhand', 'karnataka',
+  'kerala', 'madhya pradesh', 'maharashtra', 'manipur', 'meghalaya',
+  'mizoram', 'nagaland', 'odisha', 'orissa', 'punjab', 'rajasthan',
+  'sikkim', 'tamil nadu', 'telangana', 'tripura', 'uttar pradesh',
+  'uttarakhand', 'west bengal', 'andaman', 'chandigarh', 'dadra',
+  'daman', 'diu', 'jammu', 'kashmir', 'ladakh', 'lakshadweep', 'puducherry',
+  // Indian cities
+  'bangalore', 'bengaluru', 'mumbai', 'delhi', 'new delhi', 'hyderabad',
+  'pune', 'chennai', 'kolkata', 'ahmedabad', 'gurgaon', 'gurugram', 'noida',
+  'jaipur', 'kochi', 'kolkata', 'lucknow', 'indore', 'bhopal', 'surat',
+  'nagpur', 'visakhapatnam', 'vijayawada', 'coimbatore', 'madurai', 'mysore',
+  'trivandrum', 'kozhikode', 'kannur', 'kottayam', 'thrissur', 'kochi',
+  'amritsar', 'ludhiana', 'chandigarh', 'kanpur', 'varanasi', 'agra',
+  'meerut', 'rajkot', 'vadodara', 'nashik', 'aurangabad', 'solapur',
+  'kolhapur', 'thane', 'navi mumbai', 'faridabad', 'ghaziabad',
+  'patna', 'ranchi', 'raipur', 'bhubaneswar', 'cuttack', 'guwahati',
+  'dehradun', 'shimla', 'jammu', 'srinagar', 'gangtok', 'itanagar',
+  'aizawl', 'imphal', 'shillong', 'agartala', 'panaji', 'puducherry',
+  'jalandhar', 'jodhpur', 'udaipur', 'ajmer', 'kota', 'bikaner', 'jaisalmer',
+  'siliguri', 'asansol', 'dhanbad', 'jamshedpur', 'salem', 'erode',
+  'tiruchirappalli', 'vellore', 'thoothukudi', 'nellore', 'kakinada',
+  'tirupati', 'warangal', 'nizamabad', 'karimnagar', 'guntur', 'ongole',
+  'rajahmundry', 'eluru', 'kurnool', 'anantapur', 'bellary', 'hubli',
+  'mangalore', 'udupi', 'belgaum', 'gulbarga', 'dharwad', 'bijapur',
+  'shimoga', 'tumkur', 'davangere', 'ballari', 'mohali', 'panchkula',
+  'karnal', 'panipat', 'ambala', 'rohtak', 'hisar', 'sonipat', 'yamluna',
+  'meerut', 'moradabad', 'gorakhpur', 'jhansi', 'allahabad', 'prayagraj',
+  // Other global cities
+  'san antonio', 'philadelphia', 'san jose', 'san diego', 'detroit',
+  'minneapolis', 'st. louis', 'st louis', 'baltimore', 'las vegas',
+  'cincinnati', 'cleveland', 'kansas city', 'milwaukee', 'pittsburgh',
+  'memphis', 'new orleans', 'louisville', 'portland', 'sacramento',
+  'columbus', 'indianapolis', 'saint paul', 'salt lake city', 'tampa',
+  'orlando', 'charlotte', 'raleigh', 'nashville', 'durham', 'richmond',
+  'hartford', 'providence', 'albuquerque', 'omaha', 'tucson', 'fresno',
+  'long beach', 'oakland', 'austin', 'dallas', 'houston', 'seattle',
+  'miami', 'atlanta', 'chicago', 'boston', 'denver', 'phoenix',
+  'sao paulo', 'toronto', 'vancouver', 'montreal', 'london', 'manchester',
+  'birmingham', 'leeds', 'berlin', 'munich', 'hamburg', 'paris', 'dublin',
+  'amsterdam', 'barcelona', 'madrid', 'rome', 'milan', 'stockholm',
+  'oslo', 'helsinki', 'copenhagen', 'zurich', 'geneva', 'vienna',
+  'warsaw', 'prague', 'budapest', 'athens', 'istanbul', 'dubai', 'abu dhabi',
+  'doha', 'riyadh', 'jeddah', 'kuwait city', 'singapore', 'hong kong',
+  'shanghai', 'beijing', 'shenzhen', 'tokyo', 'osaka', 'seoul', 'bangkok',
+  'manila', 'jakarta', 'kuala lumpur', 'ho chi minh city', 'sydney',
+  'melbourne', 'brisbane', 'perth', 'auckland', 'johannesburg', 'cairo',
+  'lagos', 'nairobi', 'santiago', 'bogota', 'lima', 'buenos aires',
+  'santa clara', 'mountain view', 'sunnyvale', 'palo alto', 'cupertino',
+  'redmond', 'bellevue', 'plano', 'frisco', 'charleston', 'lexington',
+]) {
+  KNOWN_LOCATION_NAMES.add(place)
+}
+
+// Job-title keywords — a value made purely of these is a parsed title, not a company
+const JOB_TITLE_WORDS = /\b(engineer|developer|scientist|analyst|analytics|manager|intern|trainee|apprentice|associate|consultant|consulting|architect|designer|specialist|coordinator|administrator|executive|officer|representative|supervisor|recruiter|trainer|teacher|professor|accountant|attorney|advocate|nurse|physician|doctor|researcher|lead|head|director|principal|staff|senior|junior|full.?stack|front.?end|back.?end|devops|data|sde)\b/i
+
+// Company-legal words — if a value has one of these it is (probably) a real org.
+// Deliberately excludes ambiguous words like "software", "systems", "data",
+// "power", "digital" that also appear inside job titles.
+const COMPANY_WORDS = /\b(inc|llc|ltd|corp|corporation|company|group|health|healthcare|bank|capital|global|international|industries|industrial|holdings|partners|partner|labs|technologies|technology|solutions|solution|services|service|stores|retail|motors|airways|airlines|express|energy|insurance|ventures|fund|trust|association|foundation|institute|university|college|academy|hospital|clinic|center|centre|works|manufacturing)\b/i
+
+// Generic single words that are resume/parser truncation artifacts
+const JUNK_COMPANY_WORDS = new Set([
+  'new', 'full', 'virtual', 'home', 'work', 'current', 'team', 'role', 'job',
+  'office', 'firm', 'company', 'all', 'top', 'best', 'present', 'same', 'other',
+  'issued', 'issue', 'date', 'details', 'info', 'information', 'career',
+  'overview', 'projects', 'achievements', 'till', 'until', 'from', 'to',
+])
+
+// Date-range phrases ("Till Date", "To Present", "Up to Date")
+const JUNK_DATE_PHRASE = /^(till|to|up\s?to|as\s?of|until)\s+(date|now|present|today|current)\b/i
+
+const JUNK_COMPANY = /^(present|current|self[- ]?employed|freelance|independent|intern|internship|student|n\/a|self|anonymous|unknown|not specified|unemployed)$/i
+const JUNK_DATE = /^(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|\d{4}\s*[-–]\s*\d{4}|\d{4}\s*[-–]\s*present|\d{4}\s*[-–]\s*current)/i
+const JUNK_TITLE = /^(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december|\d+\s*(year|month|yr|mo|week|wk|day|hour|hr)s?\s*(of)?\s*(experience|exp|internship)?|n\/a|present|current|remote|hybrid|onsite|on[- ]site|full[- ]time|part[- ]time|contract|freelance|self[- ]?employed|student|intern|internship|client|client\s*:)$/i
+const JUNK_DEGREE = /^(mba|mbai|mbai[.,)\/]|b\.?tech|b\.?e\.?|m\.?tech|m\.?e\.?|b\.?sc|m\.?sc|b\.?ca|m\.?ca|b\.?com|m\.?com|ph\.?d|d\.?phil)\s*[.,)\/]?\s*$/i
+const JUNK_LANG = /^(sports|music|dance|art|reading|travel|cooking|photography|gardening|painting|drawing|gaming|fitness|yoga|meditation|member|personal|profile|details|declaration|nationality|indian|passport|language\s*:?|known\s*:?|english\s*[:–—-]\s*fluent|english\s*[:–—-]\s*basic|english\s*[:–—-]\s*intermediate|english\s*[:–—-]\s*native)$/i
+const JUNK_SCHOOL = /^(n\/a|na|none|unknown|not specified|self|university|college|school|institute|online|remote)$/i
+
+const KNOWN_LANGUAGES = new Set([
+  'english', 'spanish', 'french', 'german', 'chinese', 'mandarin', 'cantonese',
+  'japanese', 'korean', 'arabic', 'hindi', 'bengali', 'portuguese', 'russian',
+  'italian', 'dutch', 'turkish', 'polish', 'thai', 'vietnamese', 'indonesian',
+  'malay', 'filipino', 'tagalog', 'swedish', 'norwegian', 'danish', 'finnish',
+  'greek', 'hebrew', 'romanian', 'hungarian', 'czech', 'slovak', 'ukrainian',
+  'persian', 'urdu', 'tamil', 'telugu', 'marathi', 'gujarati', 'kannada',
+  'malayalam', 'punjabi', 'odia', 'assamese', 'maithili', 'sindhi',
+  'swahili', 'amharic', 'yoruba', 'igbo', 'hausa', 'zulu', 'xhosa',
+  'catalan', 'basque', 'galician', 'serbian', 'croatian', 'bosnian',
+  'bulgarian', 'slovenian', 'estonian', 'latvian', 'lithuanian',
+  'icelandic', 'irish', 'welsh', 'scottish gaelic', 'maori',
+  'khmer', 'lao', 'burmese', 'nepali', 'sinhala', 'mongolian',
+  'georgian', 'armenian', 'azerbaijani', 'kazakh', 'uzbek',
+  'pashto', 'dari', 'kurdish', 'tigrinya',
+])
+
+// Normalize raw text: collapse whitespace, strip leading/trailing punctuation
+// (loops so "India) " and "Responsibilities:" fully collapse)
+const TEXT_EDGE = /[-–—|:.,;()]/
+function normalizeText(raw: string): string {
+  let t = raw.replace(/\s+/g, ' ').trim()
+  while (t && TEXT_EDGE.test(t[0])) t = t.slice(1).trim()
+  while (t && TEXT_EDGE.test(t[t.length - 1])) t = t.slice(0, -1).trim()
+  return t
+}
+
+// Reject values that are mostly single uppercase letters separated by spaces ("I N N O D A")
+const LETTER_SPACED = /^([A-Z])\s+(\1\s+)+[A-Z]$/i
+
+// Reject values that are long sentence-like blobs with multiple common verbs
+const SENTENCE_LIKE = /\b(at|and|with|for|the|from|working|client|based)\b.{0,20}\b(at|and|for|the)\b/i
+
+function isJunkCompany(name: string): boolean {
+  const t = normalizeText(name)
+  if (t.length < 2 || t.length > 80) return true
+  if (JUNK_COMPANY.test(t)) return true
+  if (JUNK_DATE.test(t)) return true
+  if (/^\d+$/.test(t)) return true
+  if (/^[\d\s\-–/,]+$/.test(t)) return true
+  if (LETTER_SPACED.test(t)) return true
+  if (SENTENCE_LIKE.test(t)) return true
+  if (/^(LL\.?\s*B|adv\.?|advocate|chambers?)/i.test(t)) return true
+  if (/^\d+\s*(year|month|yr|mo)s?\b/i.test(t)) return true
+  if (/^client\s*[:—]/i.test(t)) return true
+  if (/^university\s+of/i.test(t)) return true
+  if (JUNK_DATE_PHRASE.test(t)) return true
+  const lower = t.toLowerCase()
+  // Resume section headers parsed as company names
+  if (RESUME_SECTION_HEADERS.has(lower)) return true
+  // Location/city/country names parsed as company names (exact, or all comma parts)
+  if (KNOWN_LOCATION_NAMES.has(lower)) return true
+  if (lower.includes(',') && lower.split(',').every(p => KNOWN_LOCATION_NAMES.has(p.trim()))) return true
+  // Single generic truncation words ("New", "Full", "Virtual")
+  if (JUNK_COMPANY_WORDS.has(lower)) return true
+  // Job-title-like values that contain no company-legal word
+  if (JOB_TITLE_WORDS.test(lower) && !COMPANY_WORDS.test(lower)) return true
+  // Title-like entries (e.g. "legal intern", "software engineer trainee")
+  if (/\b(intern|internship|trainee|fresher|student|apprentice)\b/i.test(lower)) return true
+  return false
+}
+
+function isJunkTitle(title: string): boolean {
+  const t = normalizeText(title)
+  if (t.length < 3 || t.length > 80) return true
+  if (JUNK_TITLE.test(t)) return true
+  if (/^\d+$/.test(t)) return true
+  if (/^[\d\s\-–/,]+$/.test(t)) return true
+  if (/^.{0,2}$/.test(t)) return true
+  if (LETTER_SPACED.test(t)) return true
+  if (/^(LL\.?\s*B|adv\.?|advocate|chambers?)/i.test(t)) return true
+  if (/^client\s*[:—]/i.test(t)) return true
+  if (/^unknown\b/i.test(t)) return true
+  const lower = t.toLowerCase()
+  // Resume section headers parsed as titles
+  if (RESUME_SECTION_HEADERS.has(lower)) return true
+  // Location names parsed as titles (e.g. "Hyderabad, India")
+  if (KNOWN_LOCATION_NAMES.has(lower)) return true
+  if (lower.includes(',') && lower.split(',').every(p => KNOWN_LOCATION_NAMES.has(p.trim()))) return true
+  return false
+}
+
+// Locations should be real places — reject school/degree/name-like strings
+function isJunkLocation(location: string): boolean {
+  const t = normalizeText(location)
+  if (t.length < 2 || t.length > 80) return true
+  if (JUNK_DATE.test(t)) return true
+  if (/^\d+$/.test(t)) return true
+  if (LETTER_SPACED.test(t)) return true
+  if (/(university|college|school|institute|campus|academy|degree|bachelor|master|ph\.?d|LL\.?\s*B|mba|B\.?tech|from)/i.test(t)) return true
+  if (/^(adv\.?|advocate|chambers?|self[- ]?employed|freelance|remote|hybrid|on[- ]site|onsite)/i.test(t)) return true
+  if (/\b(at|and|for|the|from|with)\b.*\b(at|and|for|the)\b/i.test(t)) return true
+  return false
+}
+
+function isJunkSchool(school: string): boolean {
+  const t = normalizeText(school)
+  if (t.length < 2 || t.length > 120) return true
+  if (JUNK_SCHOOL.test(t)) return true
+  if (/^\d+$/.test(t)) return true
+  if (LETTER_SPACED.test(t)) return true
+  return false
+}
+
+function isJunkDegree(degree: string): boolean {
+  const t = degree.trim()
+  if (t.length < 2 || t.length > 80) return true
+  if (JUNK_DEGREE.test(t)) return true
+  if (/^\d+$/.test(t)) return true
+  return false
+}
+
+function isJunkLanguage(lang: string): boolean {
+  const t = lang.trim().toLowerCase()
+  if (t.length < 2 || t.length > 30) return true
+  if (JUNK_LANG.test(t)) return true
+  if (/^\d+$/.test(t)) return true
+  // If it matches a known language (or starts with one), keep it
+  for (const known of KNOWN_LANGUAGES) {
+    if (t === known || t.startsWith(known + ' ') || t.startsWith(known + ':') || t.startsWith(known + ' (')) return false
+  }
+  // If it's just a known language with colon/parenthetical suffix, keep it
+  if (/^(english|spanish|french|germand|hindi|chinese|japanese|korean|arabic|portuguese|russian|italian|dutch|turkish|polish|thai|vietnamese|indonesian|malay|bengali|tamil|telugu|marathi|gujarati|kannada|malayalam|punjabi)[\s:]/i.test(t)) return false
+  // Not a known language → junk
+  return true
+}
+
+function normalizeLanguage(raw: string): string {
+  const t = raw.trim()
+  // Extract just the language name before any colon/parenthetical
+  const match = t.match(/^([A-Za-z\s]+)/)
+  if (match) {
+    const name = match[1].trim()
+    return name.charAt(0).toUpperCase() + name.slice(1).toLowerCase()
+  }
+  return t.charAt(0).toUpperCase() + t.slice(1)
+}
+
+function normalizeDegree(raw: string): string {
+  let t = raw.trim()
+  // Strip trailing punctuation / dashes ("MBA –" -> "MBA")
+  t = t.replace(/[-–—|:.,;()]+$/, '').trim()
+  return t
+}
+
 function normalizeLocation(raw: string): string {
   const key = raw.toLowerCase().trim()
   // Check exact match in canonical map
@@ -512,14 +796,26 @@ const JOB_TITLE_TAXONOMY = [
 // ─── Cache ────────────────────────────────────────────────────
 
 const cache: {
-  skills: Suggestion[]
+  skill: Suggestion[]
   location: Suggestion[]
   job_title: Suggestion[]
+  company: Suggestion[]
+  school: Suggestion[]
+  degree: Suggestion[]
+  language: Suggestion[]
+  industry: Suggestion[]
+  region: Suggestion[]
   lastRefresh: number
 } = {
-  skills: [],
+  skill: [],
   location: [],
   job_title: [],
+  company: [],
+  school: [],
+  degree: [],
+  language: [],
+  industry: [],
+  region: [],
   lastRefresh: 0,
 }
 
@@ -527,13 +823,74 @@ const REFRESH_MS = 300_000 // 5 min — taxonomy rarely changes
 
 async function refreshCache() {
   try {
-    // ── Skills: merge taxonomy + DB frequency ──
-    const rawSkillsRes = await pool.query<{ raw: string }>(`
-      SELECT elem::text AS raw
-      FROM candidates, jsonb_array_elements(skills) AS elem
-      WHERE skills IS NOT NULL AND jsonb_array_length(skills) > 0
-    `)
-    // Count DB occurrences per lowercase key
+    // Fire ALL 9 queries in parallel (they are independent)
+    const [rawSkillsRes, locRes, titleRes, compRes, schoolRes, degreeRes, langRes, indRes, regRes] = await Promise.all([
+      pool.query<{ raw: string }>(`
+        SELECT elem::text AS raw
+        FROM candidates, jsonb_array_elements(skills) AS elem
+        WHERE skills IS NOT NULL AND jsonb_array_length(skills) > 0
+      `),
+      pool.query<{ location: string; count: string }>(`
+        SELECT location, COUNT(*) AS count
+        FROM candidates
+        WHERE location IS NOT NULL AND location != ''
+        GROUP BY location
+        ORDER BY COUNT(*) DESC
+      `),
+      pool.query<{ title: string; count: string }>(`
+        SELECT title, COUNT(*) AS count FROM (
+          SELECT TRIM(REGEXP_REPLACE(REGEXP_REPLACE(headline, '\s+at\s+.*$', '', 'i'), '\s*[|–—-]\s*.*$', '')) AS title
+          FROM candidates WHERE headline IS NOT NULL AND headline != ''
+          UNION ALL
+          SELECT TRIM(elem->>'title') AS title
+          FROM candidates, jsonb_array_elements(work_history) AS elem
+          WHERE work_history IS NOT NULL AND jsonb_array_length(work_history) > 0 AND elem->>'title' IS NOT NULL AND elem->>'title' != ''
+          UNION ALL
+          SELECT TRIM(elem->>'title') AS title
+          FROM candidates, jsonb_array_elements(companies) AS elem
+          WHERE companies IS NOT NULL AND jsonb_array_length(companies) > 0 AND elem->>'title' IS NOT NULL AND elem->>'title' != ''
+        ) sub
+        WHERE title IS NOT NULL AND title != ''
+        GROUP BY title
+        ORDER BY COUNT(*) DESC
+      `),
+      pool.query<{ company: string }>(`
+        SELECT jsonb_array_elements(candidates.companies)->>'name' AS company
+        FROM candidates
+        WHERE candidates.companies IS NOT NULL AND jsonb_array_length(candidates.companies) > 0
+      `),
+      pool.query<{ school: string }>(`
+        SELECT jsonb_array_elements(candidates.education)->>'school' AS school
+        FROM candidates
+        WHERE candidates.education IS NOT NULL AND jsonb_array_length(candidates.education) > 0
+      `),
+      pool.query<{ degree: string }>(`
+        SELECT jsonb_array_elements(candidates.education)->>'degree' AS degree
+        FROM candidates
+        WHERE candidates.education IS NOT NULL AND jsonb_array_length(candidates.education) > 0
+      `),
+      pool.query<{ lang: string }>(`
+        SELECT jsonb_array_elements(candidates.languages)->>'name' AS lang
+        FROM candidates
+        WHERE candidates.languages IS NOT NULL AND jsonb_array_length(candidates.languages) > 0
+      `),
+      pool.query<{ industry: string; count: string }>(`
+        SELECT industry, COUNT(*)::text AS count
+        FROM candidates
+        WHERE industry IS NOT NULL AND industry != ''
+        GROUP BY industry
+        ORDER BY COUNT(*) DESC
+      `),
+      pool.query<{ region: string; count: string }>(`
+        SELECT region, COUNT(*)::text AS count
+        FROM candidates
+        WHERE region IS NOT NULL AND region != '' AND region != 'Unknown/Global'
+        GROUP BY region
+        ORDER BY COUNT(*) DESC
+      `),
+    ])
+
+    // ── 1. Process Skills ──
     const dbCounts = new Map<string, number>()
     for (const row of rawSkillsRes.rows) {
       let name = ''
@@ -548,151 +905,321 @@ async function refreshCache() {
         dbCounts.set(key, (dbCounts.get(key) || 0) + 1)
       }
     }
-    // Build skills from taxonomy (LinkedIn-style with category sublabel)
     const skillSet = new Map<string, Suggestion>()
     for (const skill of ALL_SKILLS) {
       const key = skill.value.toLowerCase()
-      skillSet.set(key, {
-        value: skill.value,
-        label: skill.value,
-        sublabel: skill.category,
-        count: dbCounts.get(key) || 0,
-        type: 'skill',
-      })
+      skillSet.set(key, { value: skill.value, label: skill.value, sublabel: skill.category, count: dbCounts.get(key) || 0, type: 'skill' })
     }
-    cache.skills = Array.from(skillSet.values())
-      .sort((a, b) => b.count - a.count)
+    const normalizedSkills = new Map<string, string>()
+    for (const skill of ALL_SKILLS) normalizedSkills.set(skill.value.toLowerCase(), skill.value)
+    for (const [rawName, count] of dbCounts) {
+      const name = normalizeText(rawName)
+      if (name.length < 2 || name.length > 60) continue
+      const key = name.toLowerCase()
+      if (normalizedSkills.has(key)) {
+        const existing = skillSet.get(key)
+        if (existing) existing.count = Math.max(existing.count, count)
+        continue
+      }
+      if (LETTER_SPACED.test(name) || SENTENCE_LIKE.test(name) || JUNK_DATE.test(name)) continue
+      normalizedSkills.set(key, name)
+      skillSet.set(key, { value: name, label: name, sublabel: 'Popular', count, type: 'skill' })
+    }
+    cache.skill = Array.from(skillSet.values()).sort((a, b) => b.count - a.count)
 
-    // ── Locations: taxonomy + DB extras (with dedup) ──
-    const locRes = await pool.query<{ location: string; count: string }>(`
-      SELECT location, COUNT(*) AS count
-      FROM candidates
-      WHERE location IS NOT NULL AND location != ''
-      GROUP BY location
-      ORDER BY COUNT(*) DESC
-    `)
+    // ── 2. Process Locations ──
     const locMap = new Map<string, Suggestion>()
-    // Add taxonomy first (normalized)
     for (const loc of LOCATION_TAXONOMY) {
       const canonical = normalizeLocation(loc)
       const key = canonical.toLowerCase()
-      if (!locMap.has(key)) {
-        locMap.set(key, {
-          value: canonical,
-          label: canonical,
-          count: 0,
-          type: 'location',
-        })
-      }
+      if (!locMap.has(key)) locMap.set(key, { value: canonical, label: canonical, count: 0, type: 'location' })
     }
-    // Overlay DB counts (with dedup via normalizeLocation)
     for (const row of locRes.rows) {
+      if (isJunkLocation(row.location)) continue
       const canonical = normalizeLocation(row.location)
       const key = canonical.toLowerCase()
       const existing = locMap.get(key)
       if (existing) {
         existing.count += parseInt(row.count, 10)
       } else if (canonical.length <= 60) {
-        locMap.set(key, {
-          value: canonical,
-          label: canonical,
-          count: parseInt(row.count, 10),
-          type: 'location',
-        })
+        locMap.set(key, { value: canonical, label: canonical, count: parseInt(row.count, 10), type: 'location' })
       }
     }
-    cache.location = Array.from(locMap.values())
-      .sort((a, b) => b.count - a.count)
+    cache.location = Array.from(locMap.values()).sort((a, b) => b.count - a.count)
 
-    // ── Job Titles: taxonomy + DB extras ──
-    const titleRes = await pool.query<{ title: string; count: string }>(`
-      SELECT
-        TRIM(
-          REGEXP_REPLACE(
-            REGEXP_REPLACE(headline, '\s+at\s+.*$', '', 'i'),
-            '\s*[|–—-]\s*.*$', ''
-          )
-        ) AS title,
-        COUNT(*) AS count
-      FROM candidates
-      WHERE headline IS NOT NULL AND headline != ''
-      GROUP BY title
-      ORDER BY COUNT(*) DESC
-    `)
+    // ── 3. Process Job Titles ──
     const titleMap = new Map<string, Suggestion>()
-    for (const t of JOB_TITLE_TAXONOMY) {
-      titleMap.set(t.toLowerCase(), { value: t, label: t, count: 0, type: 'job_title' })
-    }
+    for (const t of JOB_TITLE_TAXONOMY) titleMap.set(t.toLowerCase(), { value: t, label: t, count: 0, type: 'job_title' })
     for (const row of titleRes.rows) {
       const t = row.title.trim()
-      if (t.length < 3 || t.length > 80) continue
+      if (isJunkTitle(t)) continue
       const key = t.toLowerCase()
       const existing = titleMap.get(key)
       if (existing) {
-        existing.count = parseInt(row.count, 10)
-      } else if (parseInt(row.count, 10) >= 2) {
-        titleMap.set(key, {
-          value: t, label: t,
-          count: parseInt(row.count, 10), type: 'job_title',
-        })
+        existing.count += parseInt(row.count, 10)
+      } else if (parseInt(row.count, 10) >= 1) {
+        titleMap.set(key, { value: t, label: t, count: parseInt(row.count, 10), type: 'job_title' })
       }
     }
     cache.job_title = Array.from(titleMap.values())
-      .filter(t => {
-        const lower = t.value.toLowerCase()
-        // Filter out Kaggle metadata, company names, and junk
-        if (/datasets|kernels|votes|notebooks/.test(lower)) return false
-        if (t.value.length < 4) return false
-        // Filter entries that look like company names (single word, no space)
-        if (!t.value.includes(' ') && t.count === 0) return false
-        return true
-      })
+      .filter(t => { const lower = t.value.toLowerCase(); if (/datasets|kernels|votes|notebooks/.test(lower)) return false; if (t.value.length < 3) return false; if (!t.value.includes(' ') && t.count === 0) return false; return true })
       .sort((a, b) => b.count - a.count)
+
+    // ── 4. Process Companies ──
+    const compCounts = new Map<string, { value: string; count: number }>()
+    for (const row of compRes.rows) {
+      if (!row.company || isJunkCompany(row.company)) continue
+      const normalized = normalizeText(row.company)
+      if (normalized.length < 2) continue
+      const key = normalized.toLowerCase()
+      const existing = compCounts.get(key)
+      if (existing) {
+        existing.count += 1
+        if (/[a-z]/.test(normalized) && !/[a-z]/.test(existing.value)) existing.value = normalized
+      } else {
+        compCounts.set(key, { value: normalized, count: 1 })
+      }
+    }
+    cache.company = [...compCounts.values()].sort((a, b) => b.count - a.count).map(({ value, count }) => ({ value, label: value, count, type: 'company' as const }))
+
+    // ── 5. Process Schools ──
+    const schoolCounts = new Map<string, number>()
+    for (const row of schoolRes.rows) {
+      if (!row.school || isJunkSchool(row.school)) continue
+      const normalized = normalizeText(row.school)
+      if (normalized.length < 3) continue
+      schoolCounts.set(normalized.toLowerCase(), (schoolCounts.get(normalized.toLowerCase()) || 0) + 1)
+    }
+    cache.school = [...schoolCounts.entries()].filter(([k]) => k.length >= 3 && k.length <= 120).sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value, label: value, count, type: 'school' as const }))
+
+    // ── 6. Process Degrees ──
+    const degreeCounts = new Map<string, number>()
+    for (const row of degreeRes.rows) {
+      if (row.degree && !isJunkDegree(row.degree)) {
+        const normalized = normalizeDegree(row.degree)
+        if (normalized.length >= 2) degreeCounts.set(normalized, (degreeCounts.get(normalized) || 0) + 1)
+      }
+    }
+    cache.degree = [...degreeCounts.entries()].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value, label: value, count, type: 'degree' as const }))
+
+    // ── 7. Process Languages ──
+    const langCounts = new Map<string, number>()
+    for (const row of langRes.rows) {
+      if (row.lang && !isJunkLanguage(row.lang)) {
+        const normalized = normalizeLanguage(row.lang)
+        langCounts.set(normalized.toLowerCase(), (langCounts.get(normalized.toLowerCase()) || 0) + 1)
+      }
+    }
+    cache.language = [...langCounts.entries()].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value: value.charAt(0).toUpperCase() + value.slice(1), label: value.charAt(0).toUpperCase() + value.slice(1), count, type: 'language' as const }))
+
+    // ── 8. Process Industries ──
+    cache.industry = indRes.rows.filter(r => r.industry.trim().length >= 2).map(r => ({ value: r.industry.trim(), label: r.industry.trim(), count: parseInt(r.count, 10), type: 'industry' as const }))
+
+    // ── 9. Process Regions ──
+    cache.region = regRes.rows.filter(r => r.region.trim().length >= 2).map(r => ({ value: r.region.trim(), label: r.region.trim(), count: parseInt(r.count, 10), type: 'region' as const }))
 
     cache.lastRefresh = Date.now()
     console.log(
-      `[Autocomplete] Taxonomy loaded: ${cache.skills.length} skills, ${cache.location.length} locations, ${cache.job_title.length} titles`
+      `[Autocomplete] Taxonomy loaded: ${cache.skill.length} skills, ${cache.location.length} locations, ${cache.job_title.length} titles, ${cache.company.length} companies, ${cache.school.length} schools, ${cache.degree.length} degrees, ${cache.language.length} languages, ${cache.industry.length} industries, ${cache.region.length} regions`
     )
   } catch (error) {
     console.error('[Autocomplete] Cache refresh failed:', error)
   }
 }
 
+// ─── Fuzzy matching helpers ────────────────────────────────────
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length
+  if (m === 0) return n
+  if (n === 0) return m
+  const dp: number[] = Array.from({ length: n + 1 }, (_, i) => i)
+  for (let i = 1; i <= m; i++) {
+    let prev = dp[0]
+    dp[0] = i
+    for (let j = 1; j <= n; j++) {
+      const temp = dp[j]
+      dp[j] = Math.min(
+        dp[j] + 1,
+        dp[j - 1] + 1,
+        prev + (a[i - 1] === b[j - 1] ? 0 : 1)
+      )
+      prev = temp
+    }
+  }
+  return dp[n]
+}
+
+// Common abbreviations / synonyms per type
+const SYNONYMS: Record<string, string[]> = {
+  'dev': ['developer', 'engineer'],
+  'eng': ['engineer', 'engineering'],
+  'mgr': ['manager'],
+  'sr': ['senior'],
+  'jr': ['junior'],
+  'arch': ['architect'],
+  'admin': ['administrator'],
+  'analyst': ['analyst', 'analytics'],
+  'designer': ['designer', 'design'],
+  'infra': ['infrastructure'],
+  'ml': ['machine learning'],
+  'ai': ['artificial intelligence'],
+  'bi': ['business intelligence'],
+  'pm': ['product manager', 'project manager', 'program manager'],
+  'ux': ['user experience'],
+  'ui': ['user interface'],
+  'qa': ['quality assurance', 'testing'],
+  'sre': ['site reliability'],
+  'devops': ['development operations'],
+  'fullstack': ['full stack'],
+  'frontend': ['front end', 'front-end'],
+  'backend': ['back end', 'back-end'],
+  'mobile': ['mobile', 'ios', 'android'],
+  'cloud': ['cloud', 'aws', 'azure', 'gcp'],
+  'data': ['data', 'database'],
+  'research': ['research', 'r&d'],
+  'security': ['security', 'cybersecurity'],
+  'network': ['network', 'networking'],
+  'embedded': ['embedded', 'firmware', 'iot'],
+  'hardware': ['hardware', 'electrical'],
+  'software': ['software'],
+  'support': ['support', 'helpdesk'],
+  'technical': ['technical', 'tech'],
+  'automation': ['automation', 'automated'],
+  'consulting': ['consulting', 'consultant'],
+  'associate': ['associate', 'junior'],
+  'senior': ['senior', 'sr', 'experienced'],
+  'junior': ['junior', 'jr', 'entry'],
+  'lead': ['lead', 'head', 'principal'],
+  'director': ['director', 'head', 'vp'],
+  'vp': ['vice president', 'vp', 'executive'],
+  'chief': ['chief', 'c-level'],
+}
+
+function expandSynonyms(query: string): string[] {
+  const lower = query.toLowerCase().trim()
+  const expansions: string[] = [lower]
+  // Direct synonym match
+  if (SYNONYMS[lower]) {
+    expansions.push(...SYNONYMS[lower])
+  }
+  // Check if any word in the query is a synonym key
+  const words = lower.split(/\s+/)
+  for (const w of words) {
+    if (SYNONYMS[w]) {
+      expansions.push(...SYNONYMS[w])
+    }
+  }
+  return expansions
+}
+
+function fuzzyScore(query: string, label: string): number {
+  const q = query.toLowerCase().trim()
+  const l = label.toLowerCase()
+  if (!q || !l) return 0
+
+  // Exact match — score 100
+  if (l === q) return 100
+
+  // Starts with — score 90
+  if (l.startsWith(q)) return 90
+
+  // Contains exact phrase — score 80
+  if (l.includes(q)) return 80
+
+  // Word boundary match — score 75
+  const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (new RegExp(`\\b${escaped}`).test(l)) return 75
+
+  // Token-based: all query words appear in label (any order) — score 70
+  const queryWords = q.split(/\s+/).filter(Boolean)
+  const labelWords = l.split(/\s+/).filter(Boolean)
+  if (queryWords.length > 1) {
+    const allMatch = queryWords.every(qw =>
+      labelWords.some(lw => lw.includes(qw) || levenshtein(qw, lw) <= Math.max(1, Math.floor(Math.min(qw.length, lw.length) * 0.3)))
+    )
+    if (allMatch) return 70
+  }
+
+  // Synonym match — score 65
+  const expansions = expandSynonyms(q)
+  for (const exp of expansions) {
+    if (exp !== q && l.includes(exp)) return 65
+  }
+
+  // Any single word matches — score 55
+  for (const qw of queryWords) {
+    for (const lw of labelWords) {
+      if (lw.includes(qw) || qw.includes(lw)) return 55
+      if (levenshtein(qw, lw) <= Math.max(1, Math.floor(Math.min(qw.length, lw.length) * 0.35))) return 55
+    }
+  }
+
+  // Fuzzy substring: query chars appear in order within label — score 45
+  let qi = 0
+  for (let li = 0; li < l.length && qi < q.length; li++) {
+    if (l[li] === q[qi]) qi++
+  }
+  if (qi === q.length && q.length >= 3) return 45
+
+  // Levenshtein distance on full strings — score 35 if close enough
+  const dist = levenshtein(q, l)
+  const maxLen = Math.max(q.length, l.length)
+  if (maxLen <= 2) return 0
+  if (dist <= Math.floor(maxLen * 0.35)) return 35
+
+  // Fuzzy word-level: any word in label is close to any query word — score 30
+  for (const qw of queryWords) {
+    for (const lw of labelWords) {
+      if (qw.length >= 2 && lw.length >= 2) {
+        const d = levenshtein(qw, lw)
+        const ml = Math.max(qw.length, lw.length)
+        if (d <= Math.floor(ml * 0.4)) return 30
+      }
+    }
+  }
+
+  return 0
+}
+
 // ─── Routes ───────────────────────────────────────────────────
 
 autocompleteRouter.get('/', async (req: Request, res: Response) => {
   try {
-    const type = (req.query.type as string) || 'skills'
+    const type = (req.query.type as string) || 'skill'
     const q = ((req.query.q as string) || '').trim().toLowerCase()
-    const limit = Math.min(parseInt(req.query.limit as string) || 8, 20)
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 20)
 
     if (Date.now() - cache.lastRefresh > REFRESH_MS) {
       refreshCache()
     }
 
-    const items: Suggestion[] = cache[type as keyof typeof cache] as Suggestion[] || cache.skills
+    const items: Suggestion[] = cache[type as keyof typeof cache] as Suggestion[] || cache.skill
 
+    // Empty query → return top items by count
     if (!q || q.length < 1) {
-      res.json({ suggestions: items.slice(0, limit) })
+      const top = [...items].sort((a, b) => b.count - a.count).slice(0, limit)
+      res.json({ suggestions: top })
       return
     }
 
-    const prefixMatches: Suggestion[] = []
-    const containsMatches: Suggestion[] = []
-
+    // Score every item using fuzzy matching
+    const scored: Array<{ item: Suggestion; score: number }> = []
     for (const item of items) {
-      const lower = item.label.toLowerCase()
-      if (lower === q) {
-        prefixMatches.unshift(item)
-      } else if (lower.startsWith(q)) {
-        prefixMatches.push(item)
-      } else if (lower.includes(q)) {
-        containsMatches.push(item)
+      const score = fuzzyScore(q, item.label)
+      if (score > 0) {
+        scored.push({ item, score })
       }
-      if (prefixMatches.length + containsMatches.length >= limit * 3) break
     }
 
-    res.json({ suggestions: [...prefixMatches, ...containsMatches].slice(0, limit) })
+    // Sort by score desc, then by count desc as tiebreaker
+    scored.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score
+      return b.item.count - a.item.count
+    })
+
+    const results = scored.slice(0, limit).map(s => s.item)
+    res.json({ suggestions: results })
   } catch (error) {
     console.error('[Autocomplete] Error:', error)
     res.json({ suggestions: [] })
@@ -704,7 +1231,7 @@ autocompleteRouter.post('/refresh', async (_req: Request, res: Response) => {
   res.json({
     refreshed: true,
     counts: {
-      skills: cache.skills.length,
+      skills: cache.skill.length,
       locations: cache.location.length,
       jobTitles: cache.job_title.length,
     },

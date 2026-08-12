@@ -8,7 +8,7 @@ import { generateEmbeddings } from '../services/openai.js'
 export const searchAllRouter = Router()
 
 const SearchAllSchema = z.object({
-  providers: z.array(z.enum(['pdl', 'github', 'stackoverflow', 'kaggle'])).min(1),
+  providers: z.array(z.enum(['pdl', 'github', 'stackoverflow', 'kaggle', 'coresignal'])).min(1),
   jobTitle: z.string().max(200).optional(),
   skills: z.array(z.string().max(100)).max(50).optional(),
   country: z.string().max(100).optional(),
@@ -60,6 +60,12 @@ searchAllRouter.post('/search-all', async (req: Request, res: Response) => {
           existing = await db.selectFrom('candidates')
             .select(['id'])
             .where('pdl_id', '=', candidate.raw.pdl.pdlId)
+            .executeTakeFirst()
+        }
+        if (!existing && candidate.raw.coresignal?.id) {
+          existing = await db.selectFrom('candidates')
+            .select(['id'])
+            .where('coresignal_id', '=', String(candidate.raw.coresignal.id))
             .executeTakeFirst()
         }
 
@@ -127,6 +133,7 @@ searchAllRouter.post('/search-all', async (req: Request, res: Response) => {
               stage: 'new',
               experience_years: candidate.experience || 0,
               pdl_id: candidate.raw.pdl?.pdlId || null,
+              coresignal_id: candidate.raw.coresignal?.id ? String(candidate.raw.coresignal.id) : null,
               created_at: now,
               updated_at: now,
             })

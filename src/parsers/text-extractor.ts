@@ -36,25 +36,10 @@ export async function extractTextFromPdf(buffer: Buffer): Promise<string> {
   }
 
   // Detect scanned/image-only PDF (very little text extracted)
+  // OCR fallback disabled — MinerU/pdftext handles this better
   const strippedText = text.replace(/\s/g, '')
   if (result.numpages > 0 && strippedText.length < 50) {
-    console.warn(`[TextExtractor] PDF has ${result.numpages} pages but only ${strippedText.length} chars — attempting OCR fallback`)
-    try {
-      const ocrResult = await Tesseract.recognize(buffer, 'eng')
-      const ocrText = ocrResult.data.text || ''
-      if (ocrText.trim().length >= MIN_TEXT_LENGTH) {
-        console.log(`[TextExtractor] OCR successful: extracted ${ocrText.length} chars`)
-        text = ocrText
-        // Add page markers for multi-page OCR output
-        if (result.numpages > 1) {
-          text = `[Page 1]\n${text}`
-        }
-      } else {
-        console.warn(`[TextExtractor] OCR returned only ${ocrText.trim().length} chars — insufficient`)
-      }
-    } catch (ocrError: any) {
-      console.warn(`[TextExtractor] OCR failed: ${ocrError.message?.slice(0, 80)}`)
-    }
+    console.warn(`[TextExtractor] PDF has ${result.numpages} pages but only ${strippedText.length} chars — no extractable text`)
   }
 
   if (text.trim().length === 0) {

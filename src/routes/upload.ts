@@ -8,7 +8,7 @@ import { parseCSV, convertToJDs } from '../parsers/csv-parser.js'
 import { parseJobDescription } from '../parsers/jd-parser.js'
 import { generateEmbeddings } from '../services/openai.js'
 import { matchCandidateToAllJobs, matchJobToAllCandidates } from '../scoring/index.js'
-import { listCloudinaryFolder, fetchFromCloudinary } from '../services/cloudinary.js'
+import { listCloudinaryFolder, listAllCloudinaryResumes, fetchFromCloudinary } from '../services/cloudinary.js'
 import { computeDataQuality } from '../scoring/data-quality.js'
 import { classifyRegion } from '../services/region-classifier.js'
 import { classifyIndustry } from '../services/industry-classifier.js'
@@ -123,13 +123,12 @@ async function insertEmbeddings(
   }
 }
 
-// ─── Sync All Resumes from Cloudinary ─────────────────────────
+// ─── Sync Resumes from Cloudinary (small batch) ───────────────
 
 uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
   try {
     const folder = req.body.folder || 'candidates/Resumes'
 
-    // 1. List all files in Cloudinary folder
     const files = await listCloudinaryFolder(folder, 200)
     console.log(`[Sync] Found ${files.length} files in Cloudinary folder: ${folder}`)
 
@@ -137,10 +136,7 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
       return res.json({ synced: 0, skipped: 0, failed: 0, message: `No files found in folder: ${folder}` })
     }
 
-    // 2. Check which ones are already ingested (by source_file URL)
-    const existing = await db.selectFrom('candidates')
-      .select('source_file')
-      .execute()
+    const existing = await db.selectFrom('candidates').select('source_file').execute()
     const existingUrls = new Set(existing.map(e => e.source_file))
 
     let synced = 0
@@ -148,11 +144,16 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
     let failed = 0
     const errors: string[] = []
 
-    // 3. Process each file
+    // Check pdftext health once
+    let diAvailable = await checkDocumentIntelligenceHealth()
+    if (!diAvailable) {
+      await ensureDocumentIntelligenceRunning()
+      diAvailable = await checkDocumentIntelligenceHealth()
+    }
+
     for (const file of files) {
       const url = file.secure_url
 
-      // Skip already-ingested
       if (existingUrls.has(url)) {
         skipped++
         continue
@@ -162,7 +163,6 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
       try {
         const now = new Date()
 
-        // Store candidate (processing)
         await db.insertInto('candidates').values({
           id: candidateId,
           name: 'Processing...',
@@ -173,67 +173,290 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
           updated_at: now,
         }).execute()
 
-        // Fetch file using signed URL
         const pdfBuffer = await fetchFromCloudinary(url, file.public_id)
-
-        // Detect mimetype from file extension
         const mimetype = detectMimetype(file.public_id)
 
-        // Strategy 1: Docling (proper section detection → pipeline)
-        let usedDocling = false
-        const doclingHealthySync = await checkDocumentIntelligenceHealth()
-        if (!doclingHealthySync) {
-          console.log(`[Sync] Docling is down, attempting auto-restart...`)
-          await ensureDocumentIntelligenceRunning()
-        }
-
-        if (await checkDocumentIntelligenceHealth()) {
+        // ── TEXT EXTRACTION: pdftext best, fallback to extraction ──
+        let text = ''
+        if (diAvailable) {
           try {
             const diResult = await extractWithDocumentIntelligence(pdfBuffer, mimetype, file.public_id)
-            if (diResult.text.length > 50 && diResult.sections.length > 1) {
-              const doc = {
-                plainText: diResult.text,
-                markdown: diResult.markdown,
-                sections: diResult.sections.map(s => ({
-                  name: s.name,
-                  content: s.content,
-                  level: s.level ?? undefined,
-                  pageNumber: undefined,
-                })),
-                tables: diResult.tables.map(t => ({ markdown: t.markdown })),
-                metadata: { fileName: file.public_id, mimeType: mimetype, fileSize: pdfBuffer.length },
-              }
-              console.log(`[Sync] Docling parsed: ${diResult.sections.length} sections, ${diResult.text.length} chars`)
-              await runFullCandidatePipeline(candidateId, doc)
-              usedDocling = true
-            } else {
-              console.log(`[Sync] Docling returned insufficient data — falling back to LLM`)
+            if (diResult.text.length > 50) {
+              text = diResult.text
             }
           } catch (diErr) {
-            console.warn(`[Sync] Docling failed: ${diErr}`)
+            console.warn(`[Sync] pdftext failed: ${diErr}`)
           }
-        } else {
-          console.log(`[Sync] Docling unavailable — using LLM parser directly`)
+        }
+        if (!text) {
+          text = await extractTextFromBuffer(pdfBuffer, mimetype)
         }
 
-        // Strategy 2: Old LLM parser (works reliably for all resume formats)
-        if (!usedDocling) {
-          console.log(`[Sync] Using LLM parser fallback for: ${file.public_id}`)
-          const text = await extractTextFromBuffer(pdfBuffer, mimetype)
-          const parsed = await parseResume(text)
+        // ── FIELD PARSING: regex only ──
+        const parsed = parseResumeRegex(text)
 
+        let candidateName = parsed.name
+        if (!isValidPersonName(candidateName)) {
+          const nameFromFilename = extractNameFromFilename(file.public_id)
+          if (nameFromFilename) candidateName = nameFromFilename
+        }
+        if (!isValidPersonName(candidateName) && text) {
+          const firstLine = text.split('\n').find(l => l.trim().length > 2 && l.trim().length < 60) || ''
+          const firstName = firstLine.trim().replace(/[^a-zA-Z\s.]/g, '').trim()
+          if (isValidPersonName(firstName)) candidateName = firstName
+        }
+
+        const quality = computeDataQuality(parsed as any)
+        const skillNames = parsed.skills.map((s: any) => s.name || s)
+        const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${text}`
+        const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+        const regionResult = classifyRegion(parsed.location || '')
+
+        await db.updateTable('candidates')
+          .set({
+            name: candidateName,
+            email: parsed.email,
+            phone: parsed.phone,
+            linkedin_url: parsed.linkedin_url,
+            github_url: parsed.github_url,
+            portfolio_url: parsed.portfolio_url,
+            headline: parsed.headline,
+            location: parsed.location,
+            summary: parsed.summary,
+            experience_years: parsed.experience_years,
+            skills: JSON.stringify(parsed.skills),
+            companies: JSON.stringify(parsed.companies),
+            work_history: JSON.stringify(parsed.work_history),
+            education: JSON.stringify(parsed.education),
+            projects: JSON.stringify(parsed.projects),
+            certifications: JSON.stringify(parsed.certifications),
+            languages: JSON.stringify(parsed.languages),
+            raw_text: text,
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
+            industry: industryResult.industry,
+            region: regionResult,
+            parse_status: 'completed',
+            parse_error: null,
+            updated_at: new Date(),
+          })
+          .where('id', '=', candidateId)
+          .execute()
+
+        try {
+          const skillsText = parsed.skills.map((s: any) => s.name).join(' ')
+          const roleText = parsed.headline || parsed.companies[0]?.title || ''
+          const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+          await deleteEmbeddings(candidateId)
+          await insertEmbeddings(candidateId, [
+            { purpose: 'full_text', vector: fullVec },
+            { purpose: 'skills', vector: skillsVec },
+            { purpose: 'role', vector: roleVec },
+          ])
+          await indexCandidateToQdrant({
+            candidateId,
+            name: candidateName,
+            fullVector: fullVec,
+            skills: skillNames,
+            headline: parsed.headline || undefined,
+            location: parsed.location || undefined,
+            experienceYears: parsed.experience_years || undefined,
+            industry: industryResult.industry || undefined,
+          })
+        } catch {}
+
+        synced++
+        console.log(`[Sync] ${candidateName} — q=${quality.quality_score} skills=${skillNames.length} work=${parsed.work_history.length} edu=${parsed.education.length}`)
+      } catch (error) {
+        failed++
+        const errMsg = `${file.public_id}: ${String(error)}`
+        errors.push(errMsg)
+        console.error(`[Sync] Failed:`, errMsg)
+        try {
+          await db.updateTable('candidates')
+            .set({ name: `Failed: ${String(error).slice(0, 50)}`, parse_status: 'failed', parse_error: String(error).slice(0, 500), updated_at: new Date() })
+            .where('id', '=', candidateId)
+            .execute()
+        } catch {}
+      }
+    }
+
+    res.json({ synced, skipped, failed, total: files.length, errors })
+  } catch (error) {
+    console.error('[Sync] Error:', error)
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Bulk Sync ALL Resumes from Cloudinary (paginated) ────────
+// Uses listAllCloudinaryResumes for auto-paginated fetching (all 2000+ files)
+// Returns immediately, processes in background with concurrency control
+
+uploadRouter.post('/sync-cloudinary-full', async (req: Request, res: Response) => {
+  try {
+    const folder = req.body.folder || 'candidates/Resumes'
+    const batchSize = Math.min(req.body.batchSize || 10, 20) // max 20 concurrent
+
+    // 1. Fetch ALL files from Cloudinary (auto-paginated)
+    console.log(`[Sync Full] Fetching all files from Cloudinary: ${folder}`)
+    const files = await listAllCloudinaryResumes(folder)
+    console.log(`[Sync Full] Found ${files.length} total files`)
+
+    if (files.length === 0) {
+      return res.json({ total: 0, queued: 0, message: `No files found in folder: ${folder}` })
+    }
+
+    // 2. Check which ones are already ingested
+    const existing = await db.selectFrom('candidates')
+      .select('source_file')
+      .execute()
+    const existingUrls = new Set(existing.map(e => e.source_file))
+
+    // Filter to only unprocessed files
+    const toProcess = files.filter(f => !existingUrls.has(f.secure_url))
+    const alreadyProcessed = files.length - toProcess.length
+    console.log(`[Sync Full] ${alreadyProcessed} already in DB, ${toProcess.length} to process`)
+
+    if (toProcess.length === 0) {
+      return res.json({ total: files.length, queued: 0, alreadyProcessed, message: 'All files already processed' })
+    }
+
+    // 3. Create placeholder candidates for all files IMMEDIATELY
+    const placeholders: Array<{ candidateId: string; file: typeof files[0] }> = []
+    for (const file of toProcess) {
+      const candidateId = randomUUID()
+      const now = new Date()
+
+      await db.insertInto('candidates').values({
+        id: candidateId,
+        name: 'Processing...',
+        source_file: file.secure_url,
+        resume_url: file.secure_url,
+        parse_status: 'processing',
+        created_at: now,
+        updated_at: now,
+      }).execute()
+
+      placeholders.push({ candidateId, file })
+    }
+
+    console.log(`[Sync Full] Created ${placeholders.length} placeholder candidates, processing in background...`)
+
+    // 4. Respond IMMEDIATELY
+    res.json({
+      total: files.length,
+      queued: toProcess.length,
+      alreadyProcessed,
+      batchSize,
+      message: `Processing ${toProcess.length} resumes in background`,
+    })
+
+    // 5. Process in background with concurrency control
+    processBulkSync(placeholders, existingUrls, batchSize).catch(err => {
+      console.error('[Sync Full] Background processing error:', err)
+    })
+  } catch (error) {
+    console.error('[Sync Full] Error:', error)
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Background Bulk Processor ─────────────────────────────────
+// Text extraction: pdftext (best quality) → fallback to mammoth
+// Field parsing: ALWAYS regex (parseResumeRegex) — no AI, no broken section pipeline
+// Embeddings + Qdrant indexing happen after parse
+
+async function processBulkSync(
+  placeholders: Array<{ candidateId: string; file: { public_id: string; secure_url: string; format: string; filename: string } }>,
+  existingUrls: Set<string | null>,
+  batchSize: number
+) {
+  let synced = 0
+  let failed = 0
+  const errors: string[] = []
+
+  // Check pdftext health once for the whole batch
+  let diAvailable = await checkDocumentIntelligenceHealth()
+  if (!diAvailable) {
+    console.log(`[Sync Full] pdftext is down, attempting auto-restart...`)
+    await ensureDocumentIntelligenceRunning()
+    diAvailable = await checkDocumentIntelligenceHealth()
+  }
+  console.log(`[Sync Full] pdftext available: ${diAvailable}`)
+
+  // Process in batches
+  for (let i = 0; i < placeholders.length; i += batchSize) {
+    const batch = placeholders.slice(i, i + batchSize)
+
+    const results = await Promise.allSettled(
+      batch.map(async ({ candidateId, file }) => {
+        // Re-check dedup
+        if (existingUrls.has(file.secure_url)) {
+          await db.deleteFrom('candidates').where('id', '=', candidateId).execute()
+          return 'skipped'
+        }
+
+        try {
+          const pdfBuffer = await fetchFromCloudinary(file.secure_url, file.public_id)
+          const mimetype = detectMimetype(file.public_id)
+
+          // ── TEXT EXTRACTION (pdftext only — best quality) ──
+          let text = ''
+          if (diAvailable) {
+            try {
+              const diResult = await extractWithDocumentIntelligence(pdfBuffer, mimetype, file.public_id)
+              if (diResult.text.length > 50) {
+                text = diResult.text
+                console.log(`[Sync Full] pdftext extracted: ${file.public_id} — ${text.length} chars`)
+              } else {
+                console.log(`[Sync Full] pdftext insufficient for ${file.public_id} (${diResult.text.length} chars)`)
+              }
+            } catch (diErr) {
+              console.warn(`[Sync Full] pdftext failed for ${file.public_id}: ${diErr}`)
+            }
+          }
+
+          // Fallback: extractTextFromBuffer (mammoth for docx, pdf-parse for pdf)
+          if (!text) {
+            text = await extractTextFromBuffer(pdfBuffer, mimetype)
+          }
+
+          if (!text || text.length < 30) {
+            console.log(`[Sync Full] No extractable text for ${file.public_id}`)
+            await db.updateTable('candidates')
+              .set({ name: extractNameFromFilename(file.public_id) || 'Unknown', parse_status: 'failed', parse_error: 'No extractable text', updated_at: new Date() })
+              .where('id', '=', candidateId)
+              .execute()
+            failed++
+            return 'failed'
+          }
+
+          // ── FIELD PARSING (regex only — no AI) ──
+          const parsed = parseResumeRegex(text)
+
+          // ── NAME VALIDATION ──
           let candidateName = parsed.name
           if (!isValidPersonName(candidateName)) {
             const nameFromFilename = extractNameFromFilename(file.public_id)
             if (nameFromFilename) candidateName = nameFromFilename
           }
+          if (!isValidPersonName(candidateName) && text) {
+            const firstLine = text.split('\n').find(l => l.trim().length > 2 && l.trim().length < 60) || ''
+            const firstName = firstLine.trim().replace(/[^a-zA-Z\s.]/g, '').trim()
+            if (isValidPersonName(firstName)) candidateName = firstName
+          }
+          if (!candidateName || !isValidPersonName(candidateName)) {
+            candidateName = extractNameFromFilename(file.public_id) || 'Unknown'
+          }
 
+          // ── COMPUTE METADATA ──
           const quality = computeDataQuality(parsed as any)
           const skillNames = parsed.skills.map((s: any) => s.name || s)
           const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${text}`
           const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
           const regionResult = classifyRegion(parsed.location || '')
 
+          // ── STORE IN DB ──
           await db.updateTable('candidates')
             .set({
               name: candidateName,
@@ -254,7 +477,6 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
               certifications: JSON.stringify(parsed.certifications),
               languages: JSON.stringify(parsed.languages),
               raw_text: text,
-              resume_url: url,
               data_quality_score: quality.quality_score,
               missing_fields: quality.missing_fields,
               industry: industryResult.industry,
@@ -266,61 +488,261 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
             .where('id', '=', candidateId)
             .execute()
 
+          // ── EMBEDDINGS + QDRANT ──
+          // Skip embeddings during bulk sync — add them later via separate script
+          // This prevents server crashes from OpenAI rate limits + memory pressure
+
+          console.log(`[Sync Full] ${candidateName} — q=${quality.quality_score} skills=${skillNames.length} work=${parsed.work_history.length} edu=${parsed.education.length}`)
+          existingUrls.add(file.secure_url)
+          synced++
+          return 'synced'
+        } catch (error) {
+          failed++
+          const errMsg = `${file.public_id}: ${String(error)}`
+          errors.push(errMsg)
+          console.error(`[Sync Full] Failed:`, errMsg)
           try {
-            const skillsText = parsed.skills.map((s: any) => s.name).join(' ')
-            const roleText = parsed.headline || parsed.companies[0]?.title || ''
-            const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
-            await deleteEmbeddings(candidateId)
-            await insertEmbeddings(candidateId, [
-              { purpose: 'full_text', vector: fullVec },
-              { purpose: 'skills', vector: skillsVec },
-              { purpose: 'role', vector: roleVec },
-            ])
-            // Index into Qdrant for semantic search
-            await indexCandidateToQdrant({
-              candidateId,
-              name: candidateName,
-              fullVector: fullVec,
-              skills: skillNames,
-              headline: parsed.headline || undefined,
-              location: parsed.location || undefined,
-              experienceYears: parsed.experience_years || undefined,
-              industry: industryResult.industry || undefined,
-            })
-          } catch {
-            // Non-critical
-          }
-
-          console.log(`[Sync] LLM parsed: ${candidateName}, skills=${parsed.skills.length}, work=${parsed.work_history.length}, edu=${parsed.education.length}`)
+            await db.updateTable('candidates')
+              .set({ name: `Failed: ${String(error).slice(0, 50)}`, parse_status: 'failed', parse_error: String(error).slice(0, 500), updated_at: new Date() })
+              .where('id', '=', candidateId)
+              .execute()
+          } catch {}
+          return 'failed'
         }
+      })
+    )
 
-        synced++
-        console.log(`[Sync] Ingested: ${file.public_id}`)
-      } catch (error) {
-        failed++
-        const errMsg = `${file.public_id}: ${String(error)}`
-        errors.push(errMsg)
-        console.error(`[Sync] Failed:`, errMsg)
-        try {
-          await db.updateTable('candidates')
-            .set({
-              name: `Failed: ${String(error).slice(0, 50)}`,
-              parse_status: 'failed',
-              parse_error: String(error).slice(0, 500),
-              updated_at: new Date(),
-            })
-            .where('id', '=', candidateId)
-            .execute()
-        } catch {}
-      }
-    }
+    const batchDone = results.filter(r => r.status === 'fulfilled' && r.value === 'synced').length
+    const batchSkipped = results.filter(r => r.status === 'fulfilled' && r.value === 'skipped').length
+    const batchFailed = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === 'failed')).length
 
-    res.json({ synced, skipped, failed, total: files.length, errors })
+    console.log(`[Sync Full] Batch ${Math.floor(i / batchSize) + 1}: ${batchDone} synced, ${batchSkipped} skipped, ${batchFailed} failed (total: ${synced}/${placeholders.length})`)
+  }
+
+  console.log(`[Sync Full] COMPLETE: ${synced} synced, ${failed} failed out of ${placeholders.length} total`)
+}
+
+// ─── Re-Process All Resumes with Fixed Parser ─────────────────
+// Re-parses raw_text with improved regex parser, re-extracts text for candidates missing it
+
+uploadRouter.post('/reprocess-all', async (req: Request, res: Response) => {
+  try {
+    const batchSize = Math.min(req.body.batchSize || 10, 20)
+
+    // Find all resume candidates that need re-processing (skip completed)
+    const candidates = await db.selectFrom('candidates')
+      .select(['id', 'name', 'resume_url', 'raw_text', 'parse_status', 'source_file'])
+      .where('source', '=', 'resume')
+      .where('parse_status', '!=', 'completed')
+      .execute()
+
+    console.log(`[Reprocess] Found ${candidates.length} resume candidates`)
+
+    // Filter to those with resume_url (all from Cloudinary)
+    const withUrl = candidates.filter(c => c.resume_url)
+    const withRawText = withUrl.filter(c => c.raw_text && c.raw_text.length > 100)
+    const withoutRawText = withUrl.filter(c => !c.raw_text || c.raw_text.length <= 100)
+
+    console.log(`[Reprocess] ${withRawText.length} with raw_text (re-parse only), ${withoutRawText.length} without raw_text (re-extract + parse)`)
+
+    // Respond immediately
+    res.json({
+      total: candidates.length,
+      withRawText: withRawText.length,
+      withoutRawText: withoutRawText.length,
+      message: 'Re-processing started in background',
+    })
+
+    // Process in background
+    reprocessAll(withRawText, withoutRawText, batchSize).catch(err => {
+      console.error('[Reprocess] Background error:', err)
+    })
   } catch (error) {
-    console.error('[Sync] Error:', error)
+    console.error('[Reprocess] Error:', error)
     res.status(500).json({ error: String(error) })
   }
 })
+
+async function reprocessAll(
+  withRawText: Array<{ id: string; name: string | null; raw_text: string | null; resume_url: string | null; source_file: string | null }>,
+  withoutRawText: Array<{ id: string; name: string | null; resume_url: string | null; source_file: string | null }>,
+  batchSize: number
+) {
+  let reParsed = 0
+  let reExtracted = 0
+  let failed = 0
+
+  // Check pdftext health
+  let diAvailable = await checkDocumentIntelligenceHealth()
+  if (!diAvailable) {
+    await ensureDocumentIntelligenceRunning()
+    diAvailable = await checkDocumentIntelligenceHealth()
+  }
+  console.log(`[Reprocess] pdftext available: ${diAvailable}`)
+
+  // 1. Re-parse candidates that already have raw_text
+  console.log(`[Reprocess] Phase 1: Re-parsing ${withRawText.length} candidates with existing raw_text...`)
+  for (let i = 0; i < withRawText.length; i += batchSize) {
+    const batch = withRawText.slice(i, i + batchSize)
+    await Promise.allSettled(batch.map(async (c) => {
+      try {
+        const text = c.raw_text!
+        const parsed = parseResumeRegex(text)
+
+        let candidateName = parsed.name
+        if (!isValidPersonName(candidateName)) {
+          const nameFromFile = c.source_file ? extractNameFromFilename(c.source_file) : undefined
+          if (nameFromFile) candidateName = nameFromFile
+        }
+        if (!candidateName || !isValidPersonName(candidateName)) {
+          candidateName = c.name || 'Unknown'
+        }
+
+        const quality = computeDataQuality(parsed as any)
+        const skillNames = parsed.skills.map((s: any) => s.name || s)
+        const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${text}`
+        const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+        const regionResult = classifyRegion(parsed.location || '')
+
+        await db.updateTable('candidates')
+          .set({
+            name: candidateName,
+            email: parsed.email,
+            phone: parsed.phone,
+            linkedin_url: parsed.linkedin_url,
+            github_url: parsed.github_url,
+            portfolio_url: parsed.portfolio_url,
+            headline: parsed.headline,
+            location: parsed.location,
+            summary: parsed.summary,
+            experience_years: parsed.experience_years,
+            skills: JSON.stringify(parsed.skills),
+            companies: JSON.stringify(parsed.companies),
+            work_history: JSON.stringify(parsed.work_history),
+            education: JSON.stringify(parsed.education),
+            projects: JSON.stringify(parsed.projects),
+            certifications: JSON.stringify(parsed.certifications),
+            languages: JSON.stringify(parsed.languages),
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
+            industry: industryResult.industry,
+            region: regionResult,
+            parse_status: 'completed',
+            parse_error: null,
+            updated_at: new Date(),
+          })
+          .where('id', '=', c.id)
+          .execute()
+
+        reParsed++
+        if (reParsed % 50 === 0) console.log(`[Reprocess] Re-parsed ${reParsed}/${withRawText.length}`)
+      } catch (err) {
+        failed++
+        console.error(`[Reprocess] Failed re-parsing ${c.id}: ${err}`)
+      }
+    }))
+  }
+  console.log(`[Reprocess] Phase 1 done: ${reParsed} re-parsed, ${failed} failed`)
+
+  // 2. Re-extract text + parse for candidates without raw_text
+  if (withoutRawText.length > 0) {
+    console.log(`[Reprocess] Phase 2: Re-extracting text for ${withoutRawText.length} candidates...`)
+    for (let i = 0; i < withoutRawText.length; i++) {
+      const c = withoutRawText[i]
+      try {
+        if (!c.resume_url) {
+          failed++
+          continue
+        }
+
+        // Extract from Cloudinary — use archive download with publicId
+        const publicId = extractPublicIdFromUrl(c.resume_url)
+        if (!publicId) { failed++; continue }
+        const pdfBuffer = await fetchFromCloudinary(c.resume_url, publicId)
+        const mimetype = detectMimetype(c.resume_url)
+
+        let text = ''
+        if (diAvailable) {
+          try {
+            const diResult = await extractWithDocumentIntelligence(pdfBuffer, mimetype, c.resume_url)
+            if (diResult.text.length > 50) {
+              text = diResult.text
+            }
+          } catch {}
+        }
+        if (!text) {
+          text = await extractTextFromBuffer(pdfBuffer, mimetype)
+        }
+
+        if (!text || text.length < 30) {
+          await db.updateTable('candidates')
+            .set({ parse_status: 'failed', parse_error: 'No extractable text', updated_at: new Date() })
+            .where('id', '=', c.id)
+            .execute()
+          failed++
+          continue
+        }
+
+        const parsed = parseResumeRegex(text)
+
+        let candidateName = parsed.name
+        if (!isValidPersonName(candidateName)) {
+          const nameFromFile = c.source_file ? extractNameFromFilename(c.source_file) : undefined
+          if (nameFromFile) candidateName = nameFromFile
+        }
+        if (!candidateName || !isValidPersonName(candidateName)) {
+          candidateName = c.name || 'Unknown'
+        }
+
+        const quality = computeDataQuality(parsed as any)
+        const skillNames = parsed.skills.map((s: any) => s.name || s)
+        const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${text}`
+        const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+        const regionResult = classifyRegion(parsed.location || '')
+
+        await db.updateTable('candidates')
+          .set({
+            name: candidateName,
+            email: parsed.email,
+            phone: parsed.phone,
+            linkedin_url: parsed.linkedin_url,
+            github_url: parsed.github_url,
+            portfolio_url: parsed.portfolio_url,
+            headline: parsed.headline,
+            location: parsed.location,
+            summary: parsed.summary,
+            experience_years: parsed.experience_years,
+            skills: JSON.stringify(parsed.skills),
+            companies: JSON.stringify(parsed.companies),
+            work_history: JSON.stringify(parsed.work_history),
+            education: JSON.stringify(parsed.education),
+            projects: JSON.stringify(parsed.projects),
+            certifications: JSON.stringify(parsed.certifications),
+            languages: JSON.stringify(parsed.languages),
+            raw_text: text,
+            data_quality_score: quality.quality_score,
+            missing_fields: quality.missing_fields,
+            industry: industryResult.industry,
+            region: regionResult,
+            parse_status: 'completed',
+            parse_error: null,
+            updated_at: new Date(),
+          })
+          .where('id', '=', c.id)
+          .execute()
+
+        reExtracted++
+        if (reExtracted % 10 === 0) console.log(`[Reprocess] Re-extracted ${reExtracted}/${withoutRawText.length} (failed: ${failed})`)
+      } catch (err) {
+        failed++
+        console.error(`[Reprocess] Failed re-extracting ${c.id} (${c.name}): ${err}`)
+      }
+    }
+    console.log(`[Reprocess] Phase 2 done: ${reExtracted} re-extracted, ${failed} total failed`)
+  }
+
+  console.log(`[Reprocess] ALL DONE: ${reParsed} re-parsed, ${reExtracted} re-extracted, ${failed} failed`)
+}
 
 // ─── Sync All JDs from Cloudinary ────────────────────────────
 
@@ -502,12 +924,12 @@ async function processFilesInBackground(
   const existingNames = new Set(existingCandidates.map(c => c.name?.toLowerCase().trim()).filter(Boolean))
   const existingEmails = new Set(existingCandidates.map(c => c.email?.toLowerCase().trim()).filter(Boolean))
 
-  // Check Docling health once for the whole batch
-  let doclingAvailable = await checkDocumentIntelligenceHealth()
-  if (!doclingAvailable) {
-    console.log(`[Upload] Docling is down, attempting auto-restart...`)
+  // Check pdftext health once for the whole batch
+  let diAvailable = await checkDocumentIntelligenceHealth()
+  if (!diAvailable) {
+    console.log(`[Upload] pdftext is down, attempting auto-restart...`)
     await ensureDocumentIntelligenceRunning()
-    doclingAvailable = await checkDocumentIntelligenceHealth()
+    diAvailable = await checkDocumentIntelligenceHealth()
   }
 
   for (const file of files) {
@@ -515,143 +937,119 @@ async function processFilesInBackground(
 
     try {
       const buffer = Buffer.from(b64Buffer, 'base64')
-      let usedDocling = false
 
-      // Strategy 1: Docling
-      if (doclingAvailable) {
+      // ── TEXT EXTRACTION: pdftext best, fallback to extraction ──
+      let text = ''
+      if (diAvailable) {
         try {
           const diResult = await extractWithDocumentIntelligence(buffer, mimetype, fileName)
           if (diResult.text.length > 50) {
-            const doc = {
-              plainText: diResult.text,
-              markdown: diResult.markdown,
-              sections: diResult.sections.length > 0 ? diResult.sections.map(s => ({
-                name: s.name,
-                content: s.content,
-                level: s.level ?? undefined,
-                pageNumber: undefined,
-              })) : [{ name: 'resume', content: diResult.text, level: undefined, pageNumber: undefined }],
-              tables: diResult.tables.map(t => ({ markdown: t.markdown })),
-              metadata: { fileName, mimeType: mimetype, fileSize: buffer.length },
-            }
-            console.log(`[Upload] Docling parsed: ${fileName} — ${diResult.sections.length} sections, ${diResult.text.length} chars`)
-            await runFullCandidatePipeline(candidateId, doc)
-            usedDocling = true
-          } else {
-            console.log(`[Upload] Docling returned insufficient data for ${fileName} (${diResult.text.length} chars) — falling back to LLM`)
+            text = diResult.text
+            console.log(`[Upload] pdftext extracted: ${fileName} — ${text.length} chars`)
           }
         } catch (diErr) {
-          console.warn(`[Upload] Docling failed for ${fileName}: ${diErr}`)
+          console.warn(`[Upload] pdftext failed for ${fileName}: ${diErr}`)
         }
       }
-
-      // Strategy 2: LLM parser fallback
-      if (!usedDocling) {
-        console.log(`[Upload] Using LLM parser for: ${fileName}`)
-        const text = await extractTextFromBuffer(buffer, mimetype)
-        const parsed = await parseResume(text)
-
-        let candidateName = parsed.name
-        if (!isValidPersonName(candidateName)) {
-          const nameFromFilename = extractNameFromFilename(fileName)
-          if (nameFromFilename) candidateName = nameFromFilename
-        }
-        // Fallback: extract name from first line of raw text
-        if (!isValidPersonName(candidateName) && text) {
-          const firstLine = text.split('\n').find(l => l.trim().length > 2 && l.trim().length < 60) || ''
-          const firstName = firstLine.trim().replace(/[^a-zA-Z\s.]/g, '').trim()
-          if (isValidPersonName(firstName)) {
-            candidateName = firstName
-          }
-        }
-
-        const quality = computeDataQuality(parsed as any)
-        const skillNames = parsed.skills.map((s: any) => s.name || s)
-        const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${text}`
-        const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
-        const regionResult = classifyRegion(parsed.location || '')
-
-        await db.updateTable('candidates')
-          .set({
-            name: candidateName,
-            email: parsed.email,
-            phone: parsed.phone,
-            linkedin_url: parsed.linkedin_url,
-            github_url: parsed.github_url,
-            portfolio_url: parsed.portfolio_url,
-            headline: parsed.headline,
-            location: parsed.location,
-            summary: parsed.summary,
-            experience_years: parsed.experience_years,
-            skills: JSON.stringify(parsed.skills),
-            companies: JSON.stringify(parsed.companies),
-            work_history: JSON.stringify(parsed.work_history),
-            education: JSON.stringify(parsed.education),
-            projects: JSON.stringify(parsed.projects),
-            certifications: JSON.stringify(parsed.certifications),
-            languages: JSON.stringify(parsed.languages),
-            raw_text: text,
-            data_quality_score: quality.quality_score,
-            missing_fields: quality.missing_fields,
-            industry: industryResult.industry,
-            region: regionResult,
-            parse_status: 'completed',
-            parse_error: null,
-            updated_at: new Date(),
-          })
-          .where('id', '=', candidateId)
-          .execute()
-
-        // Generate embeddings
-        try {
-          const skillsText = parsed.skills.map((s: any) => s.name).join(' ')
-          const roleText = parsed.headline || parsed.companies[0]?.title || ''
-          const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
-          await deleteEmbeddings(candidateId)
-          await insertEmbeddings(candidateId, [
-            { purpose: 'full_text', vector: fullVec },
-            { purpose: 'skills', vector: skillsVec },
-            { purpose: 'role', vector: roleVec },
-          ])
-          // Index into Qdrant for semantic search
-          await indexCandidateToQdrant({
-            candidateId,
-            name: candidateName,
-            fullVector: fullVec,
-            skills: skillNames,
-            headline: parsed.headline || undefined,
-            location: parsed.location || undefined,
-            experienceYears: parsed.experience_years || undefined,
-            industry: industryResult.industry || undefined,
-          })
-        } catch {
-          // Non-critical
-        }
-
-        console.log(`[Upload] LLM parsed: ${candidateName}, skills=${parsed.skills.length}, work=${parsed.work_history.length}, edu=${parsed.education.length}`)
+      if (!text) {
+        text = await extractTextFromBuffer(buffer, mimetype)
       }
+
+      // ── FIELD PARSING: regex only ──
+      const parsed = parseResumeRegex(text)
+
+      let candidateName = parsed.name
+      if (!isValidPersonName(candidateName)) {
+        const nameFromFilename = extractNameFromFilename(fileName)
+        if (nameFromFilename) candidateName = nameFromFilename
+      }
+      if (!isValidPersonName(candidateName) && text) {
+        const firstLine = text.split('\n').find(l => l.trim().length > 2 && l.trim().length < 60) || ''
+        const firstName = firstLine.trim().replace(/[^a-zA-Z\s.]/g, '').trim()
+        if (isValidPersonName(firstName)) candidateName = firstName
+      }
+
+      const quality = computeDataQuality(parsed as any)
+      const skillNames = parsed.skills.map((s: any) => s.name || s)
+      const fullText = `${candidateName} ${parsed.headline || ''} ${parsed.location || ''} ${skillNames.join(' ')} ${parsed.summary || ''} ${text}`
+      const industryResult = await classifyIndustry(fullText, skillNames, parsed.headline || undefined)
+      const regionResult = classifyRegion(parsed.location || '')
+
+      await db.updateTable('candidates')
+        .set({
+          name: candidateName,
+          email: parsed.email,
+          phone: parsed.phone,
+          linkedin_url: parsed.linkedin_url,
+          github_url: parsed.github_url,
+          portfolio_url: parsed.portfolio_url,
+          headline: parsed.headline,
+          location: parsed.location,
+          summary: parsed.summary,
+          experience_years: parsed.experience_years,
+          skills: JSON.stringify(parsed.skills),
+          companies: JSON.stringify(parsed.companies),
+          work_history: JSON.stringify(parsed.work_history),
+          education: JSON.stringify(parsed.education),
+          projects: JSON.stringify(parsed.projects),
+          certifications: JSON.stringify(parsed.certifications),
+          languages: JSON.stringify(parsed.languages),
+          raw_text: text,
+          data_quality_score: quality.quality_score,
+          missing_fields: quality.missing_fields,
+          industry: industryResult.industry,
+          region: regionResult,
+          parse_status: 'completed',
+          parse_error: null,
+          updated_at: new Date(),
+        })
+        .where('id', '=', candidateId)
+        .execute()
+
+      // Generate embeddings
+      try {
+        const skillsText = parsed.skills.map((s: any) => s.name).join(' ')
+        const roleText = parsed.headline || parsed.companies[0]?.title || ''
+        const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+        await deleteEmbeddings(candidateId)
+        await insertEmbeddings(candidateId, [
+          { purpose: 'full_text', vector: fullVec },
+          { purpose: 'skills', vector: skillsVec },
+          { purpose: 'role', vector: roleVec },
+        ])
+        await indexCandidateToQdrant({
+          candidateId,
+          name: candidateName,
+          fullVector: fullVec,
+          skills: skillNames,
+          headline: parsed.headline || undefined,
+          location: parsed.location || undefined,
+          experienceYears: parsed.experience_years || undefined,
+          industry: industryResult.industry || undefined,
+        })
+      } catch {}
+
+      console.log(`[Upload] ${candidateName} — q=${quality.quality_score} skills=${skillNames.length} work=${parsed.work_history.length} edu=${parsed.education.length}`)
 
       // Post-pipeline duplicate check
       try {
-        const parsed = await pool.query(`SELECT email, name FROM candidates WHERE id = $1`, [candidateId])
-        const row = parsed.rows[0]
-        if (row?.email && existingEmails.has(row.email.toLowerCase().trim())) {
-          console.log(`[Upload] Duplicate email found: ${row.email} — deleting ${candidateId}`)
+        const row = await pool.query(`SELECT email, name FROM candidates WHERE id = $1`, [candidateId])
+        const r = row.rows[0]
+        if (r?.email && existingEmails.has(r.email.toLowerCase().trim())) {
+          console.log(`[Upload] Duplicate email found: ${r.email} — deleting ${candidateId}`)
           await pool.query(`DELETE FROM embeddings WHERE entity_id = $1`, [candidateId])
           await pool.query(`DELETE FROM processing_status WHERE entity_id = $1`, [candidateId])
           await db.deleteFrom('candidates').where('id', '=', candidateId).execute()
           continue
         }
-        if (row?.name && existingNames.has(row.name.toLowerCase().trim()) && !row.email) {
-          console.log(`[Upload] Duplicate name (no email): ${row.name} — deleting ${candidateId}`)
+        if (r?.name && existingNames.has(r.name.toLowerCase().trim()) && !r.email) {
+          console.log(`[Upload] Duplicate name (no email): ${r.name} — deleting ${candidateId}`)
           await pool.query(`DELETE FROM embeddings WHERE entity_id = $1`, [candidateId])
           await pool.query(`DELETE FROM processing_status WHERE entity_id = $1`, [candidateId])
           await db.deleteFrom('candidates').where('id', '=', candidateId).execute()
           continue
         }
-      } catch {
-        // Non-critical
-      }
+      } catch {}
 
     } catch (error) {
       console.error(`[Upload] Failed to process ${fileName}: ${error}`)

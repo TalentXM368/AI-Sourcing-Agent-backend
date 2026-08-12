@@ -1,3 +1,5 @@
+import { getApiKey } from './api-key-store.js'
+
 const GITHUB_API = 'https://api.github.com'
 
 export interface GithubSearchFilters {
@@ -29,12 +31,12 @@ export interface GithubUser {
 const CONCURRENCY = 10
 const FETCH_TIMEOUT_MS = 15_000
 
-function getHeaders(): Record<string, string> {
+async function getHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     'Accept': 'application/vnd.github+json',
     'X-GitHub-Api-Version': '2022-11-28',
   }
-  const token = process.env.GITHUB_TOKEN
+  const token = await getApiKey('github')
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
@@ -56,7 +58,7 @@ function buildSearchQuery(filters: GithubSearchFilters): string {
 async function fetchJson(url: string): Promise<any> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-  const res = await fetch(url, { headers: getHeaders(), signal: controller.signal })
+  const res = await fetch(url, { headers: await getHeaders(), signal: controller.signal })
   clearTimeout(timeout)
 
   if (res.status === 403) {
@@ -67,7 +69,7 @@ async function fetchJson(url: string): Promise<any> {
         await new Promise(r => setTimeout(r, waitMs))
         const controller2 = new AbortController()
         const timeout2 = setTimeout(() => controller2.abort(), FETCH_TIMEOUT_MS)
-        const retry = await fetch(url, { headers: getHeaders(), signal: controller2.signal })
+        const retry = await fetch(url, { headers: await getHeaders(), signal: controller2.signal })
         clearTimeout(timeout2)
         if (!retry.ok) throw new Error(`GitHub API: ${retry.status}`)
         return retry.json()

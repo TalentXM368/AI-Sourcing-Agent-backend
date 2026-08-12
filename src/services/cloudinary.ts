@@ -54,6 +54,58 @@ export async function listCloudinaryFolder(
   }
 }
 
+// ─── List ALL Files in Folder (auto-paginated) ──────────────
+
+export interface CloudinaryFile {
+  public_id: string
+  secure_url: string
+  format: string
+  filename: string
+  created_at: string
+  bytes: number
+}
+
+export async function listAllCloudinaryResumes(
+  folder: string = 'candidates/Resumes'
+): Promise<CloudinaryFile[]> {
+  const allFiles: CloudinaryFile[] = []
+  let cursor: string | undefined = undefined
+  let page = 0
+
+  do {
+    page++
+    const opts: any = {
+      type: 'upload',
+      resource_type: 'raw',
+      prefix: folder + '/',
+      max_results: 500,
+    }
+    if (cursor) opts.next_cursor = cursor
+
+    const result = await cloudinary.api.resources(opts)
+    const resources = result.resources || []
+
+    for (const r of resources) {
+      const publicId: string = r.public_id || ''
+      const filename = publicId.split('/').pop() || publicId
+      allFiles.push({
+        public_id: publicId,
+        secure_url: r.secure_url,
+        format: filename.split('.').pop()?.toLowerCase() || '',
+        filename,
+        created_at: r.created_at,
+        bytes: r.bytes || 0,
+      })
+    }
+
+    cursor = result.next_cursor
+    console.log(`[Cloudinary] Page ${page}: fetched ${resources.length} files (total: ${allFiles.length})`)
+  } while (cursor)
+
+  console.log(`[Cloudinary] Total files in ${folder}: ${allFiles.length}`)
+  return allFiles
+}
+
 // ─── Generate Signed URL for a Single File ───────────────────
 
 export function getSignedUrl(publicId: string): string {

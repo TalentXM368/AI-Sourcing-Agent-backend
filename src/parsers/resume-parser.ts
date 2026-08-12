@@ -166,10 +166,14 @@ const SECTION_ALIASES: Record<string, string[]> = {
 const DATE_PATTERNS = [
   // "Jan 2020 - Present", "January 2020 - Current"
   /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{4})\s*(?:[-–—]|to)+\s*((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{4}|present|current|now)/i,
+  // "Jul 2024 – Present", with pipe: "Machine Learning Engineer | ... July 2024 – Present"
+  /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{4})\s*[-–—]\s*(present|current|now)/i,
   // "2020 - Present", "2020 - 2023"
   /(\d{4})\s*(?:[-–—]|to)+\s*(\d{4}|present|current|now)/i,
   // "01/2020 - 06/2023"
   /(\d{1,2}\/\d{4})\s*(?:[-–—]|to)+\s*(\d{1,2}\/\d{4}|present|current|now)/i,
+  // "Jun/2024-May/2026" (no spaces)
+  /(\w+\/\d{4})\s*[-–—]\s*(\w+\/\d{4}|present|current|now)/i,
   // "2020-Present"
   /(\d{4})\s*[-–]\s*(present|current|now|\d{4})/i,
   // "Jan 2020 to Present"
@@ -182,6 +186,8 @@ const DATE_PATTERNS = [
   /(Q[1-4]\s+\d{4})\s*(?:[-–—]|to)+\s*(Q[1-4]\s+\d{4}|present|current)/i,
   // Full month: "March 2020 - December 2023"
   /((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4})\s*(?:[-–—]|to)+\s*((?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{4}|present|current)/i,
+  // Pipe-delimited with date at end: "Title | Company, July 2024 – Present"
+  /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{4})\s*[-–—]\s*(present|current|now|\d{4})/i,
   // Standalone: "Jan 2020", "2021"
   /((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+\d{4})/i,
 ]
@@ -397,12 +403,16 @@ for (const aliases of Object.values(SECTION_ALIASES)) {
 // ─── Main Regex Parser ────────────────────────────────────────
 
 export function parseResumeRegex(text: string): ParsedCandidate {
-  const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
+  // Fix no-space text: insert spaces at camelCase boundaries
+  const fixedText = fixNoSpaceText(text)
+  const lines = fixedText.split('\n').map(l => l.trim()).filter(Boolean)
   const sections = detectSections(lines)
 
-  // Merge keyword-based and contextual skills (dedup by name)
-  const keywordSkills = extractSkills(text)
-  const contextualSkills = extractContextualSkills(text)
+  // Skills: prefer explicit skills section, limit to that + contextual
+  const skillsSection = sections.find(s => s.type === 'skills')
+  const skillsText = skillsSection ? skillsSection.lines.join(' ') : fixedText
+  const keywordSkills = extractSkills(skillsText)
+  const contextualSkills = extractContextualSkills(fixedText)
   const skillMap = new Map<string, Skill>()
   for (const s of [...keywordSkills, ...contextualSkills]) {
     if (!skillMap.has(s.name)) skillMap.set(s.name, s)
@@ -410,16 +420,16 @@ export function parseResumeRegex(text: string): ParsedCandidate {
 
   return {
     name: extractName(lines),
-    email: extractEmail(text),
-    phone: extractPhone(text),
-    linkedin_url: extractLinkedin(text),
-    github_url: extractGithub(text),
-    portfolio_url: extractPortfolio(text),
+    email: extractEmail(fixedText),
+    phone: extractPhone(fixedText),
+    linkedin_url: extractLinkedin(fixedText),
+    github_url: extractGithub(fixedText),
+    portfolio_url: extractPortfolio(fixedText),
     headline: extractHeadline(lines),
     location: extractLocation(lines),
     summary: extractSummary(sections, lines),
-    experience_years: extractExperienceYears(sections, text),
-    skills: Array.from(skillMap.values()),
+    experience_years: extractExperienceYears(sections, fixedText),
+    skills: Array.from(skillMap.values()).slice(0, 30),
     companies: extractCompaniesFromWork(sections),
     work_history: extractWorkHistory(sections),
     education: extractEducation(sections),
@@ -427,6 +437,39 @@ export function parseResumeRegex(text: string): ParsedCandidate {
     certifications: extractCertifications(sections),
     languages: extractLanguages(sections),
   }
+}
+
+// ─── Fix No-Space Text ────────────────────────────────────────
+// pdftext sometimes produces text with no spaces: "PROFESSIONALEXPERIENCE"
+// This inserts spaces at camelCase/allcaps boundaries to restore readability
+
+function fixNoSpaceText(text: string): string {
+  return text.split('\n').map(line => {
+    // Clean tabs first
+    let cleaned = line.replace(/\t+/g, ' ').replace(/\s{3,}/g, '  ').trim()
+    // Skip lines that are already spaced (normal)
+    if (/\s{2,}/.test(cleaned) || cleaned.split(' ').length > 3) return cleaned
+    // Skip short lines (likely normal)
+    if (cleaned.length < 15) return cleaned
+    // Fix ALLCAPS concatenated words: "PROFESSIONALEXPERIENCE" → "PROFESSIONAL EXPERIENCE"
+    let fixed = cleaned.replace(/([A-Z]{3,})([A-Z][a-z])/g, '$1 $2')
+    // Fix camelCase: "ProfessionalExperience" → "Professional Experience"
+    fixed = fixed.replace(/([a-z])([A-Z])/g, '$1 $2')
+    // Fix numbers attached to letters but not inside dates: "AccentureJun/2024" → "Accenture Jun/2024"
+    // Don't break slash-separated dates like Jun/2024
+    fixed = fixed.replace(/([a-zA-Z])(\d{4})/g, (match, letter, year, offset) => {
+      // Check if there's a slash nearby (date pattern) — don't break those
+      const after = fixed.slice(offset + match.length, offset + match.length + 5)
+      if (/^\//.test(after)) return match
+      return letter + ' ' + year
+    })
+    fixed = fixed.replace(/(\d)([A-Za-z](?:\d|[A-Za-z]))/g, (match, digit, rest, offset) => {
+      const before = fixed.slice(Math.max(0, offset - 5), offset)
+      if (/\/$/.test(before)) return match
+      return digit + ' ' + rest
+    })
+    return fixed
+  }).join('\n')
 }
 
 // ─── Section Detection ────────────────────────────────────────
@@ -446,7 +489,43 @@ function detectSections(lines: string[]): Section[] {
     const line = lines[i]
     const normalized = line.toLowerCase().replace(/[^a-z\s]/g, '').trim()
 
-    const matchedType = matchSectionType(normalized)
+    let matchedType = matchSectionType(normalized)
+    let handledInline = false
+
+    // If no match on the full line, try splitting on double spaces
+    if (!matchedType && line.length > 60) {
+      const segments = line.split(/\s{2,}/)
+      for (const seg of segments) {
+        const segNorm = seg.toLowerCase().replace(/[^a-z\s]/g, '').trim()
+        if (segNorm.length > 40) continue
+        if (segNorm.length < 5) continue
+        const segType = matchSectionType(segNorm)
+        if (segType && matchSectionScore(segNorm) >= 0.8) {
+          const headerIdx = line.indexOf(seg)
+          const afterHeader = line.substring(headerIdx + seg.length).trim()
+          if (currentSection && headerIdx > 0) {
+            const beforeHeader = line.substring(0, headerIdx).trim()
+            if (beforeHeader.length > 0) {
+              currentSection.lines.push(beforeHeader)
+            }
+          }
+          if (currentSection) {
+            currentSection.endLine = i - 1
+            sections.push(currentSection)
+          }
+          currentSection = {
+            type: segType,
+            startLine: i + 1,
+            endLine: lines.length - 1,
+            lines: afterHeader.length > 0 ? [afterHeader] : [],
+          }
+          handledInline = true
+          break
+        }
+      }
+    }
+
+    if (handledInline) continue
 
     if (matchedType) {
       if (currentSection) {
@@ -472,6 +551,9 @@ function detectSections(lines: string[]): Section[] {
 }
 
 function matchSectionType(normalized: string): string | null {
+  // Section headers are short — skip long content lines
+  if (normalized.length > 60) return null
+
   let bestType: string | null = null
   let bestScore = 0
 
@@ -490,6 +572,16 @@ function matchSectionType(normalized: string): string | null {
         if (overlap > 0) {
           score = (overlap / aliasWords.length) * 0.6
         }
+
+        // Also check concatenated alias: "professional experience" → "professionalexperience"
+        if (score === 0) {
+          const concatAlias = alias.replace(/\s+/g, '')
+          if (normalized === concatAlias) {
+            score = 0.95
+          } else if (normalized.length > concatAlias.length * 0.6 && normalized.includes(concatAlias.slice(0, Math.floor(concatAlias.length * 0.5)))) {
+            score = 0.5
+          }
+        }
       }
       if (score > bestScore) {
         bestScore = score
@@ -498,7 +590,30 @@ function matchSectionType(normalized: string): string | null {
     }
   }
 
-  return bestScore >= 0.6 ? bestType : null
+    return bestScore >= 0.6 ? bestType : null
+}
+
+function matchSectionScore(normalized: string): number {
+  let bestScore = 0
+  for (const [type, aliases] of Object.entries(SECTION_ALIASES)) {
+    for (const alias of aliases) {
+      let score = 0
+      if (normalized === alias) {
+        score = 1.0
+      } else if (normalized.includes(alias)) {
+        score = 0.8
+      } else {
+        const aliasWords = alias.split(/\s+/)
+        const lineWords = normalized.split(/\s+/)
+        const overlap = aliasWords.filter(w => lineWords.includes(w)).length
+        if (overlap > 0) {
+          score = (overlap / aliasWords.length) * 0.6
+        }
+      }
+      if (score > bestScore) bestScore = score
+    }
+  }
+  return bestScore
 }
 
 // ─── Name Extraction ──────────────────────────────────────────
@@ -851,6 +966,14 @@ function extractSkills(text: string): Skill[] {
 // ─── Contextual Skill Extraction ──────────────────────────────
 // Extracts skills mentioned in phrases like "used Kubernetes and Terraform"
 
+// Generic terms that should NOT be extracted from full-text context
+const GENERIC_SKILLS = new Set([
+  'ml', 'ai', 'rest', 'microservices', 'ci/cd', 'oop', 'agile', 'scrum',
+  'devops', 'machine learning', 'deep learning', 'nlp', 'llm', 'data science',
+  'data structures', 'algorithms', 'design patterns', 'test driven development',
+  'tdd', 'lean', 'saas', 'paas', 'iaas', 'multi-tenancy',
+])
+
 function extractContextualSkills(text: string): Skill[] {
   const contextPatterns = [
     /(?:used|experience with|proficient in|skilled in|knowledge of|familiar with|hands-on experience with|expertise in|working with|background in)\s+([\w\s,\/+#.]+?)(?:\.|,|\n|$)/gi,
@@ -861,8 +984,10 @@ function extractContextualSkills(text: string): Skill[] {
     for (const match of text.matchAll(pattern)) {
       const parts = match[1].split(/[,\/&]/).map(s => s.trim().toLowerCase())
       for (const part of parts) {
+        // Skip generic/abstract terms
+        if (GENERIC_SKILLS.has(part)) continue
         for (const [skill, category] of Object.entries(SKILL_KEYWORDS)) {
-          if (part.includes(skill) && !found.has(skill)) {
+          if (part.includes(skill) && !found.has(skill) && !GENERIC_SKILLS.has(skill)) {
             found.set(skill, category)
           }
         }
@@ -874,6 +999,14 @@ function extractContextualSkills(text: string): Skill[] {
 
 // ─── Work History Extraction ──────────────────────────────────
 
+function isLikelyTitle(text: string): boolean {
+  const titleKeywords = ['engineer', 'developer', 'manager', 'lead', 'scientist', 'analyst',
+    'architect', 'specialist', 'consultant', 'director', 'senior', 'junior', 'staff',
+    'principal', 'coordinator', 'supervisor', 'intern', 'associate', 'researcher']
+  const lower = text.toLowerCase()
+  return titleKeywords.some(kw => lower.includes(kw))
+}
+
 function extractWorkHistory(sections: Section[]): WorkHistoryEntry[] {
   const expSection = sections.find(s => s.type === 'experience')
   if (!expSection) return []
@@ -881,8 +1014,8 @@ function extractWorkHistory(sections: Section[]): WorkHistoryEntry[] {
   const entries: WorkHistoryEntry[] = []
   let current: Partial<WorkHistoryEntry> | null = null
 
-  for (const line of expSection.lines) {
-    // Check if this line contains a date range (indicates a job entry)
+  for (let i = 0; i < expSection.lines.length; i++) {
+    const line = expSection.lines[i]
     let hasDateRange = false
     let from: string | undefined
     let to: string | undefined
@@ -899,16 +1032,66 @@ function extractWorkHistory(sections: Section[]): WorkHistoryEntry[] {
 
     if (hasDateRange) {
       // Save previous entry
-      if (current?.title && current?.company) {
+      if (current?.title && current?.company && current.company !== 'Unknown') {
         entries.push(current as WorkHistoryEntry)
       }
 
-      // Extract title and company from the line
       const { title, company } = extractTitleCompany(line)
 
+      // If no company on date line, peek at next lines to find company + title
+      let companyFromNext = company
+      let titleFromNext: string | undefined
+      
+      // If the extracted "title" doesn't look like a job title, it's likely a company name
+      let titleIsActuallyCompany = title && !isLikelyTitle(title) && title.length > 1
+      
+      if (!companyFromNext || companyFromNext.length < 3) {
+        // Try next 2 lines to find company and title
+        for (let j = i + 1; j < Math.min(i + 3, expSection.lines.length); j++) {
+          const nextLine = expSection.lines[j].trim()
+          if (nextLine.length < 2 || nextLine.length > 100) continue
+          const nextHasDate = DATE_PATTERNS.some(p => p.test(nextLine))
+          if (nextHasDate) break
+          
+          // Use extractTitleCompany on the next line to check if it has both title and company
+          const nextResult = extractTitleCompany(nextLine)
+          if (nextResult.company && nextResult.company.length > 2 && !isLikelyTitle(nextResult.company)) {
+            // Found a line with company info - use it
+            companyFromNext = nextResult.company
+            if (nextResult.title) titleFromNext = nextResult.title
+            i = j
+            break
+          } else if (!companyFromNext || companyFromNext.length < 3) {
+            const cleaned = cleanCompanyName(nextLine)
+            if (cleaned.length > 2 && !isLikelyTitle(nextLine)) {
+              companyFromNext = cleaned
+              i = j
+              break
+            } else if (isLikelyTitle(nextLine) && !title) {
+              titleFromNext = nextLine
+            }
+          }
+        }
+      } else {
+        companyFromNext = cleanCompanyName(companyFromNext)
+      }
+      
+      // If the "title" is actually a company name, swap roles
+      if (titleIsActuallyCompany && (!companyFromNext || companyFromNext === 'Unknown')) {
+        companyFromNext = title
+        // Try to get real title from next line
+        if (i + 1 < expSection.lines.length) {
+          const nextLine = expSection.lines[i + 1].trim()
+          if (nextLine.length > 2 && isLikelyTitle(nextLine) && !DATE_PATTERNS.some(p => p.test(nextLine))) {
+            titleFromNext = nextLine
+            i++
+          }
+        }
+      }
+
       current = {
-        title: title || 'Unknown',
-        company: company || 'Unknown',
+        title: titleFromNext || title || 'Unknown',
+        company: companyFromNext || 'Unknown',
         from,
         to: to?.includes('present') || to?.includes('current') || to?.includes('now') ? 'Present' : to,
         description: '',
@@ -916,7 +1099,6 @@ function extractWorkHistory(sections: Section[]): WorkHistoryEntry[] {
         is_current: to?.toLowerCase().includes('present') || to?.toLowerCase().includes('current') || to?.toLowerCase().includes('now'),
       }
     } else if (current) {
-      // Accumulate description/achievements
       if (line.startsWith('•') || line.startsWith('-') || line.startsWith('▸') || line.startsWith('▪')) {
         current.achievements!.push(line.replace(/^[•\-▸▪]\s*/, ''))
       } else if (line.length > 15 && !current.description) {
@@ -927,31 +1109,126 @@ function extractWorkHistory(sections: Section[]): WorkHistoryEntry[] {
     }
   }
 
-  // Save last entry
-  if (current?.title && current?.company) {
+  if (current?.title && current?.company && current.company !== 'Unknown') {
     entries.push(current as WorkHistoryEntry)
   }
 
   return entries.slice(0, 10)
 }
 
+function isLocation(text: string): boolean {
+  const t = text.trim().toLowerCase()
+  // US state abbreviations
+  if (/^[A-Z]{2}$/.test(text.trim())) return true
+  // Known countries
+  const countries = ['usa', 'india', 'uk', 'canada', 'germany', 'australia', 'singapore', 'japan', 'china', 'dubai', 'remote']
+  if (countries.includes(t)) return true
+  // Known cities
+  const cities = ['bangalore', 'bengaluru', 'mumbai', 'delhi', 'hyderabad', 'chennai', 'pune',
+    'kolkata', 'ahmedabad', 'jaipur', 'lucknow', 'san francisco', 'new york', 'los angeles',
+    'chicago', 'seattle', 'boston', 'london', 'berlin', 'toronto', 'singapore', 'dubai',
+    'sydney', 'melbourne', 'raleigh', 'durham', 'austin', 'dallas', 'houston', 'seattle',
+    'portland', 'denver', 'miami', 'atlanta', 'nashville', 'pittsburgh', 'columbus',
+    'indianapolis', 'detroit', 'minneapolis', 'baltimore', 'tampa', 'orlando', 'jacksonville',
+    'cleveland', 'cincinnati', 'boise', 'reno', 'tacoma', 'phoenix', 'tucson', 'charlotte']
+  if (cities.includes(t)) return true
+  // "City, State" patterns
+  if (/^.+,\s*[A-Z]{2}$/.test(text.trim())) return true
+  return false
+}
+
+function cleanCompanyName(name: string): string {
+  if (!name) return name
+  let cleaned = name
+    .replace(/\s+/g, ' ')
+    .replace(/[\t]/g, ' ')
+    .trim()
+  
+  // Remove pipe and everything after: "Costco Wholesale |" → "Costco Wholesale"
+  cleaned = cleaned.replace(/\s*\|.*$/, '').trim()
+  
+  // Remove trailing location patterns: "Remote, NY" / "USA" / "India" / "San Jose, CA"
+  cleaned = cleaned.replace(/\s*,?\s*(?:Remote|Remote,\s*\w+|USA|India|UK|Canada|Germany|Australia|Singapore|Japan|China|Dubai|Hyderabad|Bangalore|Noida|Gurgaon|Pune|Mumbai|Chennai|Delhi|San\s*Jose|San\s*Francisco|New\s*York|Los\s*Angeles|Seattle|Chicago|Boston|Austin|Dallas|Houston|Atlanta|Denver|Miami|Portland|Raleigh|Durham|Charlotte|Phoenix|Tucson|Detroit|Minneapolis|Pittsburgh|Columbus|Indianapolis|Nashville|Memphis|Louisville|Milwaukee|Baltimore|New\s*Orleans|Oklahoma\s*City|Kansas\s*City|Salt\s*Lake\s*City|Las\s*Vegas|Honolulu|Tampa|Orlando|Jacksonville|Cleveland|Cincinnati|St\.\s*Louis|Virginia\s*Beach|Norfolk|Boise|Reno|Spokane|Tacoma|Salem|Eugene|Anchorage|Fairbanks|Honolulu)\s*$/i, '').trim()
+  
+  // Remove state abbreviations at end: "PA" / "NY" / "CA" / "TX" etc.
+  cleaned = cleaned.replace(/\s+[A-Z]{2}$/, '').trim()
+  
+  // Remove ", Country" or just country names
+  cleaned = cleaned.replace(/\s*,?\s*(?:United States|U\.S\.A?\.?)\s*$/i, '').trim()
+  
+  // Remove " | title" patterns at end
+  cleaned = cleaned.replace(/\s*\|\s*(?:AI|ML|Software|Data|Cloud|DevOps|Full.?Stack|Backend|Frontend|Senior|Junior|Lead|Principal|Staff|Director|Manager|Engineer|Developer|Architect|Scientist|Analyst|Consultant|Specialist).*$/i, '').trim()
+  
+  // If what's left is too short (just a location), return empty
+  if (cleaned.length < 2) return name.trim()
+  
+  return cleaned
+}
+
 function extractTitleCompany(line: string): { title: string | null; company: string | null } {
-  // Common patterns:
-  // "Software Engineer at Google"
-  // "Google - Software Engineer"
-  // "Software Engineer | Google"
-  // "Software Engineer, Google"
+  // Strip dates from line first
+  let cleanLine = line
+  for (const dp of DATE_PATTERNS) {
+    cleanLine = cleanLine.replace(dp, '')
+  }
+  cleanLine = cleanLine.replace(/\s+/g, ' ').trim()
 
-  const patterns = [
-    /(.+?)\s+(?:at|@)\s+(.+)/i,
-    /(.+?)\s*[-–|,]\s*(.+)/i,
-  ]
-
-  for (const pattern of patterns) {
-    const match = line.replace(DATE_PATTERNS[0].source, '').replace(DATE_PATTERNS[1].source, '').trim().match(pattern)
-    if (match) {
-      return { title: match[1].trim(), company: match[2].trim() }
+  // Handle pipe-delimited format first
+  const pipeParts = cleanLine.split(/\s*\|\s*/)
+  if (pipeParts.length >= 2) {
+    const firstPart = pipeParts[0].trim()
+    const secondPart = pipeParts[1].trim()
+    
+    const titleKeywords = ['engineer', 'developer', 'manager', 'lead', 'scientist', 'analyst', 'architect', 'specialist', 'consultant', 'director', 'senior', 'junior', 'staff', 'principal']
+    const secondIsTitle = titleKeywords.some(kw => secondPart.toLowerCase().includes(kw))
+    
+    if (secondIsTitle) {
+      return { title: secondPart, company: cleanCompanyName(firstPart) }
     }
+    // First part might be company, second part might be location
+    if (isLocation(secondPart)) {
+      return { title: null, company: cleanCompanyName(firstPart) }
+    }
+    return { title: secondPart || firstPart, company: cleanCompanyName(firstPart) }
+  }
+
+  // "at" pattern: "Software Engineer at Google"
+  const atMatch = cleanLine.match(/(.+?)\s+(?:at|@)\s+(.+)/i)
+  if (atMatch && atMatch[1].trim().length > 2 && atMatch[2].trim().length > 1) {
+    return { title: atMatch[1].trim(), company: cleanCompanyName(atMatch[2].trim()) }
+  }
+
+  // Comma pattern (BEFORE dash): "DXC Technology, PA" or "Title, Company"
+  const commaMatch = cleanLine.match(/(.+?)\s*,\s*(.+)/)
+  if (commaMatch && commaMatch[1].trim().length > 2 && commaMatch[2].trim().length > 0) {
+    const secondPart = commaMatch[2].trim()
+    if (isLocation(secondPart)) {
+      // "DXC Technology, PA" → company = "DXC Technology"
+      return { title: null, company: cleanCompanyName(commaMatch[1].trim()) }
+    } else {
+      // "Software Engineer, Google" → title, company
+      return { title: commaMatch[1].trim(), company: cleanCompanyName(secondPart) }
+    }
+  }
+
+  // Dash pattern: "Google - Software Engineer" or "Fission Lab - Software Developer"
+  const dashMatch = cleanLine.match(/(.+?)\s*[-–]\s*(.+)/)
+  if (dashMatch && dashMatch[1].trim().length > 2 && dashMatch[2].trim().length > 1) {
+    const leftPart = dashMatch[1].trim()
+    const rightPart = dashMatch[2].trim()
+    
+    // If left part has NO title keywords and right part HAS title keywords, swap:
+    // "Fission Lab – Software Developer" → company: "Fission Lab", title: "Software Developer"
+    if (!isLikelyTitle(leftPart) && isLikelyTitle(rightPart)) {
+      return { title: rightPart, company: cleanCompanyName(leftPart) }
+    }
+    // Default: left = title, right = company
+    return { title: leftPart, company: cleanCompanyName(rightPart) }
+  }
+
+  // If no pattern matched, the whole line is likely the title
+  if (cleanLine.length > 3 && cleanLine.length < 80) {
+    return { title: cleanLine, company: null }
   }
 
   return { title: line, company: null }
@@ -976,38 +1253,74 @@ function extractEducation(sections: Section[]): Education[] {
   if (!eduSection) return []
 
   const entries: Education[] = []
+  const lines = eduSection.lines
 
-  for (const line of eduSection.lines) {
+  // Strategy 1: Try to find institution keywords and parse lines
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
     if (line.length < 3) continue
 
-    // Check if line contains an actual institution name (capitalized, followed by institution keyword)
-    const hasInstitutionKeyword = /(?:[A-Z][a-z]+\s+)*(?:University|College|Institute|School|Academy|Polytechnic|Point|Bootcamp|Coursera|Udemy|edX|Udacity|Pluralsight|LinkedIn Learning|Codecademy|General Assembly|Le Wagon|Springboard)/i.test(line)
+    // Check if line contains an actual institution name
+    const hasInstitutionKeyword = /(?:University|College|Institute|School|Academy|Polytechnic|Point|Bootcamp|Coursera|Udemy|edX|Udacity|Pluralsight|LinkedIn Learning|Codecademy|General Assembly|Le Wagon|Springboard)/i.test(line)
     
     // Check if line contains a degree keyword
     const hasDegreeKeyword = DEGREE_KEYWORDS.some(kw => line.toLowerCase().includes(kw.toLowerCase()))
     
-    // Skip lines that have NO institution keyword AND NO degree keyword
+    // If no institution and no degree, skip
     if (!hasInstitutionKeyword && !hasDegreeKeyword) continue
     
-    // Skip lines that only have degree keywords but no institution
-    // (e.g., just "B.Tech" or "Bachelor of Science" with no school name)
-    if (!hasInstitutionKeyword && hasDegreeKeyword) {
-      // Allow if line also has a year (might be a standalone degree entry)
-      const hasYear = /\b(20\d{2}|19\d{2})\b/.test(line)
-      if (!hasYear) continue
+    // If no institution but has degree, check if next line has institution
+    if (!hasInstitutionKeyword && hasDegreeKeyword && i + 1 < lines.length) {
+      const nextLine = lines[i + 1]
+      const nextHasInstitution = /(?:University|College|Institute|School|Academy|Polytechnic)/i.test(nextLine)
+      if (nextHasInstitution) {
+        // Degree on this line, school on next - combine them
+        const entry: Education = { school: '' }
+        
+        // Extract school from next line
+        const schoolMatch = nextLine.match(/([A-Z][A-Za-z\s]*(?:University|College|Institute|School|Academy|Polytechnic)[A-Za-z\s]*)/i)
+        if (schoolMatch) entry.school = schoolMatch[1].trim()
+        
+        // Extract degree from current line
+        entry.degree = line.trim()
+        
+        // Extract year from either line
+        const yearFromLine = line.match(/\b(20\d{2}|19\d{2})(?:\s*[-–—]\s*(?:present|current|\d{4}))?\b/i)
+        const yearFromNext = nextLine.match(/\b(20\d{2}|19\d{2})(?:\s*[-–—]\s*(?:present|current|\d{4}))?\b/i)
+        if (yearFromLine) entry.year = yearFromLine[1]
+        else if (yearFromNext) entry.year = yearFromNext[1]
+        
+        if (entry.school && (entry.degree || entry.year)) entries.push(entry)
+        i++ // Skip the school line
+        continue
+      }
     }
 
-    // Try to extract school name - look for institution names
+    // If has institution but no degree, check if previous line was a degree
+    if (hasInstitutionKeyword && !hasDegreeKeyword && entries.length > 0) {
+      const prevEntry = entries[entries.length - 1]
+      if (prevEntry.school && prevEntry.degree && !prevEntry.school.includes('University')) {
+        // Previous entry was actually a degree line without school, merge
+        const schoolMatch = line.match(/([A-Z][A-Za-z\s]*(?:University|College|Institute|School|Academy|Polytechnic)[A-Za-z\s]*)/i)
+        if (schoolMatch) {
+          prevEntry.school = schoolMatch[1].trim()
+          if (prevEntry.year) entries.push(prevEntry)
+        }
+      }
+    }
+
+    // Standard parsing: line has institution keyword
+    const entry: Education = { school: '' }
+
+    // Extract school name
     const schoolMatch = line.match(/([A-Z][A-Za-z\s]*(?:University|College|Institute|School|Academy|Polytechnic|Point)[A-Za-z\s]*)/i)
-    if (!schoolMatch) {
-      // If no institution keyword found but line has education keyword, skip
-      // Don't use whole line as school - it might be just a degree or description
-      continue
+    if (schoolMatch) {
+      entry.school = schoolMatch[1].trim()
+      // Fix stuck month: "Marist CollegeAug" → "Marist College"
+      entry.school = entry.school.replace(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*$/i, '').trim()
     }
 
-    const entry: Education = { school: schoolMatch[1].trim() }
-
-    // Extract degree - look for degree patterns
+    // Extract degree
     const degreePatterns = [
       /(?:Bachelor|B\.?Tech|B\.?E\.|B\.?Sc|B\.?CA|B\.?Com|B\.?BA|B\.?BS)[^\s,]*(?:\s*(?:of|in)\s+[A-Za-z\s]+?)?(?:\s*[,–|]|$)/i,
       /(?:Master|M\.?Tech|M\.?E\.|M\.?Sc|M\.?CA|M\.?Com|M\.?BA|M\.?BS|MBA)[^\s,]*(?:\s*(?:of|in)\s+[A-Za-z\s]+?)?(?:\s*[,–|]|$)/i,
@@ -1018,10 +1331,8 @@ function extractEducation(sections: Section[]): Education[] {
     for (const pattern of degreePatterns) {
       const match = line.match(pattern)
       if (match) {
-        const degreeStr = match[0].trim()
-        entry.degree = degreeStr
+        entry.degree = match[0].trim()
         
-        // Try to extract field
         const fieldMatch = line.match(/(?:in|of)\s+([A-Za-z\s]+?)(?:\s*[,–|\(]|$)/i)
         if (fieldMatch && !fieldMatch[1].trim().includes('University') && !fieldMatch[1].trim().includes('College')) {
           entry.field = fieldMatch[1].trim()
@@ -1030,12 +1341,11 @@ function extractEducation(sections: Section[]): Education[] {
       }
     }
 
-    // Extract year range (e.g., "2023-Present" or "Aug 2020 - Present")
+    // Extract year range
     const yearRangeMatch = line.match(/\b((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+)?(\d{4})\s*[-–—to]+\s*((?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*\.?\s+)?(present|current|\d{4})\b/i)
     if (yearRangeMatch) {
       entry.year = yearRangeMatch[2] + '-' + (yearRangeMatch[4].includes('present') || yearRangeMatch[4].includes('current') ? 'Present' : yearRangeMatch[4])
     } else {
-      // Fallback: extract single year
       const yearMatch = line.match(/\b(20\d{2}|19\d{2})\b/)
       if (yearMatch) entry.year = yearMatch[1]
     }
@@ -1044,7 +1354,6 @@ function extractEducation(sections: Section[]): Education[] {
     const gpaMatch = line.match(/(?:CGPA|GPA|Percentage|Grade)[:\s]*(\d+\.?\d*)/i)
     if (gpaMatch) entry.gpa = gpaMatch[1]
 
-    // Only add if we found school and either degree or year
     if (entry.school && (entry.degree || entry.year)) {
       entries.push(entry)
     }

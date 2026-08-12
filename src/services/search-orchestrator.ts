@@ -1,7 +1,8 @@
-import { searchPersons, type NormalizedCandidate as PdlCandidate } from './people-data-labs.js'
+import { searchPersons, type NormalizedCandidate as PdlCandidate, isPdlQuotaExhausted } from './people-data-labs.js'
 import { searchGithubUsers, type GithubUser } from './github-search.js'
 import { searchStackoverflowUsers, type StackoverflowUser } from './stackoverflow-search.js'
 import { searchKaggleUsers, type KaggleUser } from './kaggle-search.js'
+import { searchCoresignalUsers, type CoresignalUser } from './coresignal.js'
 
 // ─── Types ──────────────────────────────────────────────────
 
@@ -25,6 +26,7 @@ export interface UnifiedCandidate {
     github?: GithubCandidateRaw
     so?: StackoverflowUser
     kaggle?: KaggleUser
+    coresignal?: CoresignalUser
   }
 }
 
@@ -61,6 +63,10 @@ export interface AllSearchFilters {
   minReputation?: number
   kaggleQuery?: string
   kaggleSortBy?: string
+  coresignalQuery?: string
+  coresignalJobTitle?: string
+  coresignalLocation?: string
+  coresignalCompany?: string
   size?: number
 }
 
@@ -193,6 +199,24 @@ function extractKaggle(u: KaggleUser): ExtractedCandidate {
     avatarUrl: u.imageUrl,
     source: 'kaggle',
     sourceId: u.username,
+    raw: u,
+  }
+}
+
+function extractCoresignal(u: CoresignalUser): ExtractedCandidate {
+  return {
+    name: u.fullName || 'Unknown',
+    title: u.currentTitle,
+    company: u.currentCompany,
+    location: u.location,
+    skills: u.skills || [],
+    experience: null,
+    githubUrl: null,
+    linkedinUrl: u.profileUrl,
+    profileUrl: u.profileUrl,
+    avatarUrl: u.pictureUrl,
+    source: 'coresignal',
+    sourceId: String(u.id),
     raw: u,
   }
 }
@@ -362,6 +386,24 @@ function scoreCandidate(c: ExtractedCandidate, filters: AllSearchFilters): { ove
       }
     }
 
+    if (source === 'coresignal') {
+      score = 65
+      const raw = c.raw as CoresignalUser
+      if (raw) {
+        if (raw.connectionsCount && raw.connectionsCount > 500) score += 10
+        else if (raw.connectionsCount && raw.connectionsCount > 100) score += 5
+        if (raw.followersCount && raw.followersCount > 1000) score += 10
+        else if (raw.followersCount && raw.followersCount > 100) score += 5
+        if (raw.currentTitle) score += 5
+        if (raw.currentCompany) score += 5
+        if (raw.skills && raw.skills.length > 3) score += 5
+      }
+      if (requiredSkills.length > 0) {
+        const matches = skillsLower.filter(s => requiredSkills.some(rs => s.includes(rs) || rs.includes(s)))
+        score += Math.min(matches.length * 5, 15)
+      }
+    }
+
     sourceScores[source] = Math.min(score, 100)
   }
 
@@ -389,31 +431,43 @@ export async function searchAllProviders(filters: AllSearchFilters): Promise<All
   const size = Math.min(Math.max(filters.size || 25, 1), 100)
 
   const searchPromises: Promise<{ source: string; result: any }>[] = []
+  const totals: Record<string, number> = {}
 
   if (providers.includes('pdl')) {
-    // Cap PDL size to 25 to avoid hitting monthly quota with large requests
-    // The service auto-retries with smaller sizes on 402, but starting smaller is safer
-    const pdlSize = Math.min(size, 25)
-    searchPromises.push(
-      searchPersons({
-        jobTitle: filters.jobTitle,
-        skills: filters.skills,
-        country: filters.country,
-        industry: filters.industry,
-        experience: filters.experience,
-        keywords: filters.keywords,
-        size: pdlSize,
-      }).then(r => ({ source: 'pdl', result: r })).catch(e => {
-        console.error('[SearchAll] PDL failed:', e.message)
-        return { source: 'pdl', result: { candidates: [], total: 0, scrollToken: null } }
-      })
-    )
+    // Skip PDL entirely if quota is known to be exhausted — don't waste API calls
+    if (isPdlQuotaExhausted()) {
+      console.log('[SearchAll] PDL quota exhausted — skipping PDL provider')
+      totals.pdl = 0
+    } else {
+      // Cap PDL size to 25 to avoid hitting monthly quota with large requests
+      // The service auto-retries with smaller sizes on 402, but starting smaller is safer
+      const pdlSize = Math.min(size, 25)
+      searchPromises.push(
+        searchPersons({
+          jobTitle: filters.jobTitle,
+          skills: filters.skills,
+          country: filters.country,
+          industry: filters.industry,
+          experience: filters.experience,
+          keywords: filters.keywords,
+          size: pdlSize,
+        }).then(r => ({ source: 'pdl', result: r })).catch(e => {
+          console.error('[SearchAll] PDL failed:', e.message)
+          return { source: 'pdl', result: { candidates: [], total: 0, scrollToken: null } }
+        })
+      )
+    }
   }
 
-  if (providers.includes('github') && filters.ghQuery) {
+  // Derive provider-specific queries from generic fields when not explicitly set
+  const ghQuery = filters.ghQuery || [filters.jobTitle, ...(filters.skills || []), filters.keywords].filter(Boolean).join(' ')
+  const soTag = filters.soTag || filters.skills?.join(';') || filters.jobTitle || ''
+  const kaggleQuery = filters.kaggleQuery || [filters.jobTitle, ...(filters.skills || []), filters.keywords].filter(Boolean).join(' ')
+
+  if (providers.includes('github') && ghQuery) {
     searchPromises.push(
       searchGithubUsers({
-        query: filters.ghQuery,
+        query: ghQuery,
         language: filters.language,
         location: filters.location,
         minFollowers: filters.minFollowers,
@@ -426,10 +480,10 @@ export async function searchAllProviders(filters: AllSearchFilters): Promise<All
     )
   }
 
-  if (providers.includes('stackoverflow') && filters.soTag) {
+  if (providers.includes('stackoverflow') && soTag) {
     searchPromises.push(
       searchStackoverflowUsers({
-        tags: filters.soTag,
+        tags: soTag,
         minReputation: filters.minReputation,
         location: filters.location,
         size,
@@ -440,10 +494,10 @@ export async function searchAllProviders(filters: AllSearchFilters): Promise<All
     )
   }
 
-  if (providers.includes('kaggle') && filters.kaggleQuery) {
+  if (providers.includes('kaggle') && kaggleQuery) {
     searchPromises.push(
       searchKaggleUsers({
-        query: filters.kaggleQuery,
+        query: kaggleQuery,
         sortBy: filters.kaggleSortBy as any,
         size,
       }).then(r => ({ source: 'kaggle', result: r })).catch(e => {
@@ -453,9 +507,26 @@ export async function searchAllProviders(filters: AllSearchFilters): Promise<All
     )
   }
 
+  const coresignalQuery = filters.coresignalQuery || [filters.coresignalJobTitle || filters.jobTitle, ...(filters.skills || []), filters.keywords].filter(Boolean).join(' ')
+
+  if (providers.includes('coresignal') && coresignalQuery) {
+    searchPromises.push(
+      searchCoresignalUsers({
+        query: coresignalQuery,
+        jobTitle: filters.coresignalJobTitle || filters.jobTitle,
+        skills: filters.skills,
+        location: filters.coresignalLocation || filters.location,
+        company: filters.coresignalCompany,
+        size,
+      }).then(r => ({ source: 'coresignal', result: r })).catch(e => {
+        console.error('[SearchAll] Coresignal failed:', e.message)
+        return { source: 'coresignal', result: { users: [], total: 0 } }
+      })
+    )
+  }
+
   const settled = await Promise.all(searchPromises)
 
-  const totals: Record<string, number> = {}
   let allExtracted: ExtractedCandidate[] = []
 
   for (const { source, result } of settled) {
@@ -471,6 +542,9 @@ export async function searchAllProviders(filters: AllSearchFilters): Promise<All
     } else if (source === 'kaggle') {
       totals.kaggle = result.total || 0
       allExtracted.push(...(result.users || []).map(extractKaggle))
+    } else if (source === 'coresignal') {
+      totals.coresignal = result.total || 0
+      allExtracted.push(...(result.users || []).map(extractCoresignal))
     }
   }
 
@@ -517,5 +591,6 @@ function buildRawPayload(c: ExtractedCandidate): UnifiedCandidate['raw'] {
   if (primarySource === 'github') return { github: c.raw }
   if (primarySource === 'stackoverflow') return { so: c.raw }
   if (primarySource === 'kaggle') return { kaggle: c.raw }
+  if (primarySource === 'coresignal') return { coresignal: c.raw }
   return {}
 }
