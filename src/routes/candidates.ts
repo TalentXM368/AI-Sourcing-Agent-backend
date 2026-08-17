@@ -2,8 +2,61 @@ import { Router, Request, Response } from 'express'
 import { db, pool } from '../db/index.js'
 import { v2 as cloudinary } from 'cloudinary'
 import AdmZip from 'adm-zip'
+import mammoth from 'mammoth'
+import puppeteer from 'puppeteer-core'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { spawnSync } from 'child_process'
+import { tmpdir } from 'os'
+import { writeFileSync, unlinkSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 
 export const candidatesRouter = Router()
+
+// ─── Converter Availability ──────────────────────────────────
+
+candidatesRouter.get('/converters', async (_req, res) => {
+  const findChromeExecutable = (() => {
+    try {
+      const platform = os.platform()
+      const candidates: string[] = []
+      if (platform === 'win32') {
+        candidates.push(
+          path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+          path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Chromium', 'Application', 'chrome.exe')
+        )
+      } else if (platform === 'darwin') {
+        candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium')
+      } else {
+        candidates.push('/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium')
+      }
+      for (const p of candidates) if (p && fs.existsSync(p)) return p
+      return null
+    } catch (e) { return null }
+  })()
+
+  const findLibreOfficeExecutable = (() => {
+    try {
+      const platform = os.platform()
+      const candidates: string[] = []
+      if (platform === 'win32') {
+        candidates.push(
+          path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'LibreOffice', 'program', 'soffice.exe'),
+          path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'LibreOffice', 'program', 'soffice.exe')
+        )
+      } else if (platform === 'darwin') {
+        candidates.push('/Applications/LibreOffice.app/Contents/MacOS/soffice')
+      } else {
+        candidates.push('/usr/bin/soffice', '/usr/local/bin/soffice', 'soffice')
+      }
+      for (const p of candidates) if (p && fs.existsSync(p)) return p
+      return null
+    } catch (e) { return null }
+  })()
+
+  res.json({ libreOffice: findLibreOfficeExecutable || null, chrome: findChromeExecutable || null, envPuppeteerPath: process.env.PUPPETEER_EXECUTABLE_PATH || null })
+})
 
 // ─── View Resume (proxy download from Cloudinary) ─────────────
 
@@ -71,7 +124,159 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
     }
 
     const fileBuffer = entries[0].getData()
-    const ext = publicId.split('.').pop()?.toLowerCase() || 'pdf'
+    const entryName = entries[0].entryName || publicId.split('/').pop() || ''
+    const ext = entryName.split('.').pop()?.toLowerCase() || publicId.split('.').pop()?.toLowerCase() || 'pdf'
+
+    // If the file is a DOCX, convert to HTML so browsers can render it inline.
+    if (ext === 'docx') {
+      try {
+        const result = await mammoth.convertToHtml(
+          { buffer: fileBuffer } as any,
+          {
+            convertImage: async (element: any) => {
+              const imageBase64 = await element.read('base64')
+              return { src: `data:${element.contentType};base64,${imageBase64}` }
+            }
+          } as any
+        )
+
+        const html = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${candidate.name || 'resume'}</title><style>body{font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; padding:16px;}</style></head><body>${result.value}</body></html>`
+
+        // Render HTML to PDF with Puppeteer-core to preserve layout/formatting.
+        // We prefer using a local Chrome/Chromium binary to avoid large downloads.
+        function findChromeExecutable(): string | null {
+          const envPath = process.env.PUPPETEER_EXECUTABLE_PATH
+          if (envPath && fs.existsSync(envPath)) return envPath
+
+          const platform = os.platform()
+          const candidates: string[] = []
+          if (platform === 'win32') {
+            candidates.push(
+              path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+              path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+              path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'Chromium', 'Application', 'chrome.exe')
+            )
+          } else if (platform === 'darwin') {
+            candidates.push('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', '/Applications/Chromium.app/Contents/MacOS/Chromium')
+          } else {
+            candidates.push('/usr/bin/google-chrome', '/usr/bin/chromium-browser', '/usr/bin/chromium')
+          }
+
+          for (const p of candidates) {
+            try {
+              if (p && fs.existsSync(p)) return p
+            } catch (e) { /* ignore */ }
+          }
+          return null
+        }
+
+        const chromePath = findChromeExecutable()
+        // Try LibreOffice first for highest-fidelity DOCX -> PDF conversion
+        function findLibreOfficeExecutable(): string | null {
+          const platform = os.platform()
+          const candidates: string[] = []
+          if (platform === 'win32') {
+            candidates.push(
+              path.join(process.env['PROGRAMFILES'] || 'C:\\Program Files', 'LibreOffice', 'program', 'soffice.exe'),
+              path.join(process.env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)', 'LibreOffice', 'program', 'soffice.exe')
+            )
+          } else if (platform === 'darwin') {
+            candidates.push('/Applications/LibreOffice.app/Contents/MacOS/soffice')
+          } else {
+            candidates.push('/usr/bin/soffice', '/usr/local/bin/soffice', 'soffice')
+          }
+
+          for (const p of candidates) {
+            try {
+              if (p && fs.existsSync(p)) return p
+            } catch (e) { }
+          }
+          return null
+        }
+
+        const libreOfficePath = findLibreOfficeExecutable()
+        console.info(`[Candidates] Converter availability - LibreOffice: ${libreOfficePath || 'none'}, Chrome: ${chromePath || 'none'}`)
+        if (libreOfficePath) {
+          try {
+            const tmpDir = mkdtempSync(path.join(tmpdir(), 'resume-'))
+            const docxPath = path.join(tmpDir, 'resume.docx')
+            const outPath = path.join(tmpDir, 'resume.pdf')
+            writeFileSync(docxPath, fileBuffer)
+
+            // Run LibreOffice headless conversion
+            const result = spawnSync(libreOfficePath, ['--headless', '--convert-to', 'pdf', '--outdir', tmpDir, docxPath], { timeout: 60_000 })
+
+            if (result.status === 0 && fs.existsSync(outPath)) {
+              console.info('[Candidates] Served PDF via LibreOffice conversion')
+              const pdfBuffer = readFileSync(outPath)
+              rmSync(tmpDir, { recursive: true, force: true })
+
+              const filename = candidate.name
+                ? `${candidate.name.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`
+                : (entryName || 'resume.pdf')
+
+              res.setHeader('Content-Type', 'application/pdf')
+              res.setHeader('Content-Length', pdfBuffer.length)
+              res.setHeader('Content-Disposition', `inline; filename="${filename}"`)
+              res.setHeader('Cache-Control', 'private, max-age=3600')
+              return res.send(pdfBuffer)
+            } else {
+              console.warn('[Candidates] LibreOffice conversion failed, falling back:', result.error || result.stderr?.toString())
+              try { rmSync(tmpDir, { recursive: true, force: true }) } catch (e) {}
+            }
+          } catch (loErr) {
+            console.error('[Candidates] LibreOffice conversion error:', loErr)
+          }
+        }
+        if (chromePath) {
+          try {
+            const browser = await puppeteer.launch({ executablePath: chromePath, args: ['--no-sandbox','--disable-setuid-sandbox'] })
+            const page = await browser.newPage()
+            await page.setContent(html, { waitUntil: 'networkidle0' })
+            const pdfBuffer = await page.pdf({ format: 'A4', printBackground: true })
+            await browser.close()
+
+            const filename = candidate.name
+              ? `${candidate.name.replace(/[^a-zA-Z0-9]/g, '_')}.pdf`
+              : (entryName || 'resume.pdf')
+
+            console.info('[Candidates] Served PDF via local Chrome (Puppeteer)')
+
+            res.setHeader('Content-Type', 'application/pdf')
+            res.setHeader('Content-Length', pdfBuffer.length)
+            res.setHeader('Content-Disposition', `inline; filename="${filename}"`)
+            res.setHeader('Cache-Control', 'private, max-age=3600')
+            return res.send(pdfBuffer)
+          } catch (pdfErr) {
+            console.error('[Candidates] DOCX -> PDF conversion failed using local Chrome:', pdfErr)
+            // Fall back to serving HTML
+            const filename = candidate.name
+              ? `${candidate.name.replace(/[^a-zA-Z0-9]/g, '_')}.html`
+              : (entryName || 'resume.html')
+
+            res.setHeader('Content-Type', 'text/html; charset=utf-8')
+            res.setHeader('Content-Length', Buffer.byteLength(html))
+            res.setHeader('Content-Disposition', `inline; filename="${filename}"`)
+            res.setHeader('Cache-Control', 'private, max-age=3600')
+            return res.send(html)
+          }
+        } else {
+          console.warn('[Candidates] No Chrome/Chromium executable found; serving HTML instead of PDF. Set PUPPETEER_EXECUTABLE_PATH to override.')
+          const filename = candidate.name
+            ? `${candidate.name.replace(/[^a-zA-Z0-9]/g, '_')}.html`
+            : (entryName || 'resume.html')
+
+          res.setHeader('Content-Type', 'text/html; charset=utf-8')
+          res.setHeader('Content-Length', Buffer.byteLength(html))
+          res.setHeader('Content-Disposition', `inline; filename="${filename}"`)
+          res.setHeader('Cache-Control', 'private, max-age=3600')
+          return res.send(html)
+        }
+      } catch (convErr) {
+        console.error('[Candidates] DOCX -> HTML conversion failed:', convErr)
+        // Fall through to send original file as binary
+      }
+    }
 
     const contentTypes: Record<string, string> = {
       pdf: 'application/pdf',
@@ -82,7 +287,7 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
 
     const filename = candidate.name
       ? `${candidate.name.replace(/[^a-zA-Z0-9]/g, '_')}.${ext}`
-      : publicId.split('/').pop()
+      : entryName || publicId.split('/').pop()
 
     res.setHeader('Content-Type', contentType)
     res.setHeader('Content-Length', fileBuffer.length)
