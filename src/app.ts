@@ -41,7 +41,7 @@ const app = express()
 // ─── Middleware ────────────────────────────────────────────────
 
 const allowedOrigins = process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
+  ? process.env.FRONTEND_URL.split(',').map(s => s.trim().replace(/\/$/, ''))
   : [
       'http://localhost:8080',
       'http://localhost:8081',

@@ -44,10 +44,15 @@ export function requireRole(roles: MemberRole[]) {
 }
 
 export function sessionCookie(token: string, maxAge = 1000 * 60 * 60 * 24 * 30): string {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : ''
-  return `sourcing_session=${encodeURIComponent(token)}; Max-Age=${Math.floor(maxAge / 1000)}; Path=/; HttpOnly; SameSite=Lax${secure}`
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production' || process.env.VERCEL === '1'
+  const secure = isProduction ? '; Secure' : ''
+  const sameSite = isProduction ? 'None' : 'Lax'
+  return `sourcing_session=${encodeURIComponent(token)}; Max-Age=${Math.floor(maxAge / 1000)}; Path=/; HttpOnly; SameSite=${sameSite}${secure}`
 }
 
 export function clearedSessionCookie(): string {
-  return 'sourcing_session=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax'
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production' || process.env.VERCEL === '1'
+  const secure = isProduction ? '; Secure' : ''
+  const sameSite = isProduction ? 'None' : 'Lax'
+  return `sourcing_session=; Max-Age=0; Path=/; HttpOnly; SameSite=${sameSite}${secure}`
 }
