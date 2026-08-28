@@ -4,7 +4,10 @@ let connection: Redis | null = null;
 
 export function getRedisConnection(): Redis {
   if (!connection) {
-    const url = process.env.REDIS_URL || 'redis://localhost:6379';
+    const url = process.env.REDIS_URL;
+    if (!url) {
+      throw new Error('Redis not configured (REDIS_URL not set). Cannot create connection.');
+    }
     connection = new Redis(url, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,

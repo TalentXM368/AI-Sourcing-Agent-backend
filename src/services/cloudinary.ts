@@ -121,7 +121,7 @@ export function getSignedUrl(publicId: string): string {
 // ─── Fetch File from Cloudinary (via archive download) ────────
 
 export async function fetchFromCloudinary(url: string, publicId?: string): Promise<Buffer> {
-  const FETCH_TIMEOUT_MS = 30_000
+  const FETCH_TIMEOUT_MS = 60_000
 
   try {
     if (publicId) {

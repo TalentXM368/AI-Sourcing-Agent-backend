@@ -11,6 +11,8 @@ try { config({ path: resolve(__dirname, '../../.env') }) } catch {}
 export interface Database {
   candidates: {
     id: string
+    organization_id: string | null
+    created_by_id: string | null
     name: string
     email: string | null
     phone: string | null
@@ -52,6 +54,8 @@ export interface Database {
     role: string
     company: string | null
     location: string | null
+    organization_id: string | null
+    created_by_id: string | null
     required_skills: string[]
     nice_to_have_skills: string[]
     avoid_skills: string[]
@@ -67,6 +71,8 @@ export interface Database {
   }
   clients: {
     id: string
+    organization_id: string | null
+    created_by_id: string | null
     zoho_account_id: string | null
     account_name: string
     industry: string | null
@@ -153,12 +159,75 @@ export interface Database {
   }
   search_history: {
     id: string
+    organization_id: string | null
+    created_by_id: string | null
     source: string
     query: string
     filters: Record<string, unknown>
     result_count: number
     saved_count: number
     candidate_ids: string[]
+    created_at: Date
+  }
+  users: {
+    id: string
+    first_name: string
+    last_name: string
+    email: string
+    password_hash: string
+    onboarding_role: string | null
+    status: 'ACTIVE' | 'DISABLED'
+    created_at: Date
+    updated_at: Date
+    last_login_at: Date | null
+  }
+  organizations: {
+    id: string
+    name: string
+    website: string | null
+    industry: string | null
+    company_size: string | null
+    country: string | null
+    logo_url: string | null
+    onboarding_completed: boolean
+    created_at: Date
+    updated_at: Date
+  }
+  organization_members: {
+    id: string
+    organization_id: string
+    user_id: string
+    role: 'OWNER' | 'ADMIN' | 'RECRUITER' | 'HIRING_MANAGER' | 'MEMBER'
+    status: 'ACTIVE' | 'INVITED' | 'REMOVED'
+    joined_at: Date | null
+    created_at: Date
+    updated_at: Date
+  }
+  sessions: {
+    id: string
+    user_id: string
+    token_hash: string
+    expires_at: Date
+    created_at: Date
+    last_used_at: Date | null
+  }
+  password_reset_tokens: {
+    id: string
+    user_id: string
+    token_hash: string
+    expires_at: Date
+    used_at: Date | null
+    created_at: Date
+  }
+  organization_invitations: {
+    id: string
+    organization_id: string
+    email: string
+    role: 'OWNER' | 'ADMIN' | 'RECRUITER' | 'HIRING_MANAGER' | 'MEMBER'
+    token_hash: string
+    expires_at: Date
+    accepted_at: Date | null
+    created_by_id: string
     created_at: Date
   }
 }
@@ -168,11 +237,13 @@ export interface Database {
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 15000,
-  statement_timeout: 30000,
+  max: 5,
+  idleTimeoutMillis: 60000,
+  connectionTimeoutMillis: 30000,
+  statement_timeout: 60000,
   allowExitOnIdle: false,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 10000,
 })
 
 export const db = new Kysely<Database>({

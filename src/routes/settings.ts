@@ -6,8 +6,10 @@ import {
   getApiKeyStatus, invalidateKeyCache,
 } from '../services/api-key-store.js'
 import { decryptKey } from '../services/key-encryption.js'
+import { requireAuth } from '../middleware/auth.js'
 
 export const settingsRouter = Router()
+settingsRouter.use(requireAuth)
 
 // In-memory cache (fast reads, reset on server restart)
 const settingsCache = new Map<string, boolean>()
@@ -47,7 +49,7 @@ settingsRouter.get('/api-keys', async (_req: Request, res: Response) => {
   try {
     const statuses = await Promise.all(
       (Object.keys(PROVIDERS) as ProviderId[]).map(async (id) => {
-        const status = await getApiKeyStatus(id)
+        const status = await getApiKeyStatus(id, _req.auth!.organizationId)
         return { ...PROVIDERS[id], ...status }
       })
     )
@@ -63,7 +65,7 @@ settingsRouter.get('/api-keys/:provider', async (req: Request, res: Response) =>
     if (!(provider in PROVIDERS)) {
       return res.status(400).json({ error: 'Invalid provider' })
     }
-    const status = await getApiKeyStatus(provider as ProviderId)
+    const status = await getApiKeyStatus(provider as ProviderId, req.auth!.organizationId)
     res.json({ ...PROVIDERS[provider as ProviderId], ...status })
   } catch (error) {
     res.status(500).json({ error: 'Failed to load provider status' })
@@ -80,9 +82,9 @@ settingsRouter.put('/api-keys/:provider', async (req: Request, res: Response) =>
     if (!key || typeof key !== 'string' || key.trim().length === 0) {
       return res.status(400).json({ error: 'API key is required' })
     }
-    await saveApiKey(provider as ProviderId, key.trim())
+    await saveApiKey(provider as ProviderId, key.trim(), req.auth!.organizationId)
     invalidateKeyCache()
-    const status = await getApiKeyStatus(provider as ProviderId)
+    const status = await getApiKeyStatus(provider as ProviderId, req.auth!.organizationId)
     console.log(`[Settings] API key saved for provider: ${provider}`)
     res.json({ message: 'API key saved', ...status })
   } catch (error) {
@@ -96,7 +98,7 @@ settingsRouter.delete('/api-keys/:provider', async (req: Request, res: Response)
     if (!(provider in PROVIDERS)) {
       return res.status(400).json({ error: 'Invalid provider' })
     }
-    await deleteApiKey(provider as ProviderId)
+    await deleteApiKey(provider as ProviderId, req.auth!.organizationId)
     invalidateKeyCache()
     console.log(`[Settings] API key deleted for provider: ${provider}`)
     res.json({ message: 'API key removed' })
@@ -112,7 +114,7 @@ settingsRouter.post('/api-keys/:provider/validate', async (req: Request, res: Re
       return res.status(400).json({ error: 'Invalid provider' })
     }
 
-    const key = await getApiKey(provider as ProviderId)
+    const key = await getApiKey(provider as ProviderId, req.auth!.organizationId)
     if (!key) {
       return res.status(400).json({ valid: false, error: 'No API key configured' })
     }
@@ -143,8 +145,8 @@ settingsRouter.post('/api-keys/:provider/validate', async (req: Request, res: Re
         message = resp.ok ? 'Key is valid' : `API returned ${resp.status}`
       } else if (provider === 'kaggle_username' || provider === 'kaggle_key') {
         // Validate Kaggle by checking both are set and making a test request
-        const username = provider === 'kaggle_username' ? key : await getApiKey('kaggle_username')
-        const kaggleKey = provider === 'kaggle_key' ? key : await getApiKey('kaggle_key')
+        const username = provider === 'kaggle_username' ? key : await getApiKey('kaggle_username', req.auth!.organizationId)
+        const kaggleKey = provider === 'kaggle_key' ? key : await getApiKey('kaggle_key', req.auth!.organizationId)
         if (!username || !kaggleKey) {
           valid = false
           message = 'Both Kaggle username and API key are required'

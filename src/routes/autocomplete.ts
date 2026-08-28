@@ -822,73 +822,91 @@ const cache: {
 const REFRESH_MS = 300_000 // 5 min — taxonomy rarely changes
 
 async function refreshCache() {
+  const startTime = Date.now()
+  console.log('[Autocomplete] Starting cache refresh...')
+
   try {
-    // Fire ALL 9 queries in parallel (they are independent)
-    const [rawSkillsRes, locRes, titleRes, compRes, schoolRes, degreeRes, langRes, indRes, regRes] = await Promise.all([
-      pool.query<{ raw: string }>(`
-        SELECT elem::text AS raw
-        FROM candidates, jsonb_array_elements(skills) AS elem
-        WHERE skills IS NOT NULL AND jsonb_array_length(skills) > 0
-      `),
-      pool.query<{ location: string; count: string }>(`
-        SELECT location, COUNT(*) AS count
-        FROM candidates
-        WHERE location IS NOT NULL AND location != ''
-        GROUP BY location
-        ORDER BY COUNT(*) DESC
-      `),
-      pool.query<{ title: string; count: string }>(`
-        SELECT title, COUNT(*) AS count FROM (
-          SELECT TRIM(REGEXP_REPLACE(REGEXP_REPLACE(headline, '\s+at\s+.*$', '', 'i'), '\s*[|–—-]\s*.*$', '')) AS title
-          FROM candidates WHERE headline IS NOT NULL AND headline != ''
-          UNION ALL
-          SELECT TRIM(elem->>'title') AS title
-          FROM candidates, jsonb_array_elements(work_history) AS elem
-          WHERE work_history IS NOT NULL AND jsonb_array_length(work_history) > 0 AND elem->>'title' IS NOT NULL AND elem->>'title' != ''
-          UNION ALL
-          SELECT TRIM(elem->>'title') AS title
-          FROM candidates, jsonb_array_elements(companies) AS elem
-          WHERE companies IS NOT NULL AND jsonb_array_length(companies) > 0 AND elem->>'title' IS NOT NULL AND elem->>'title' != ''
-        ) sub
-        WHERE title IS NOT NULL AND title != ''
-        GROUP BY title
-        ORDER BY COUNT(*) DESC
-      `),
-      pool.query<{ company: string }>(`
-        SELECT jsonb_array_elements(candidates.companies)->>'name' AS company
-        FROM candidates
-        WHERE candidates.companies IS NOT NULL AND jsonb_array_length(candidates.companies) > 0
-      `),
-      pool.query<{ school: string }>(`
-        SELECT jsonb_array_elements(candidates.education)->>'school' AS school
-        FROM candidates
-        WHERE candidates.education IS NOT NULL AND jsonb_array_length(candidates.education) > 0
-      `),
-      pool.query<{ degree: string }>(`
-        SELECT jsonb_array_elements(candidates.education)->>'degree' AS degree
-        FROM candidates
-        WHERE candidates.education IS NOT NULL AND jsonb_array_length(candidates.education) > 0
-      `),
-      pool.query<{ lang: string }>(`
-        SELECT jsonb_array_elements(candidates.languages)->>'name' AS lang
-        FROM candidates
-        WHERE candidates.languages IS NOT NULL AND jsonb_array_length(candidates.languages) > 0
-      `),
-      pool.query<{ industry: string; count: string }>(`
-        SELECT industry, COUNT(*)::text AS count
-        FROM candidates
-        WHERE industry IS NOT NULL AND industry != ''
-        GROUP BY industry
-        ORDER BY COUNT(*) DESC
-      `),
-      pool.query<{ region: string; count: string }>(`
-        SELECT region, COUNT(*)::text AS count
-        FROM candidates
-        WHERE region IS NOT NULL AND region != '' AND region != 'Unknown/Global'
-        GROUP BY region
-        ORDER BY COUNT(*) DESC
-      `),
-    ])
+    // Run queries sequentially with individual timeouts to avoid pool exhaustion
+  const queries = [
+    { name: 'skills', sql: `
+      SELECT elem::text AS raw
+      FROM candidates, jsonb_array_elements(skills) AS elem
+      WHERE skills IS NOT NULL AND jsonb_array_length(skills) > 0
+    ` },
+    { name: 'locations', sql: `
+      SELECT location, COUNT(*) AS count
+      FROM candidates
+      WHERE location IS NOT NULL AND location != ''
+      GROUP BY location
+      ORDER BY COUNT(*) DESC
+    ` },
+    { name: 'titles', sql: `
+      SELECT title, COUNT(*) AS count FROM (
+        SELECT TRIM(REGEXP_REPLACE(REGEXP_REPLACE(headline, '\s+at\s+.*$', '', 'i'), '\s*[|–—-]\s*.*$', '')) AS title
+        FROM candidates WHERE headline IS NOT NULL AND headline != ''
+        UNION ALL
+        SELECT TRIM(elem->>'title') AS title
+        FROM candidates, jsonb_array_elements(work_history) AS elem
+        WHERE work_history IS NOT NULL AND jsonb_array_length(work_history) > 0 AND elem->>'title' IS NOT NULL AND elem->>'title' != ''
+        UNION ALL
+        SELECT TRIM(elem->>'title') AS title
+        FROM candidates, jsonb_array_elements(companies) AS elem
+        WHERE companies IS NOT NULL AND jsonb_array_length(companies) > 0 AND elem->>'title' IS NOT NULL AND elem->>'title' != ''
+      ) sub
+      WHERE title IS NOT NULL AND title != ''
+      GROUP BY title
+      ORDER BY COUNT(*) DESC
+    ` },
+    { name: 'companies', sql: `
+      SELECT jsonb_array_elements(candidates.companies)->>'name' AS company
+      FROM candidates
+      WHERE candidates.companies IS NOT NULL AND jsonb_array_length(candidates.companies) > 0
+    ` },
+    { name: 'schools', sql: `
+      SELECT jsonb_array_elements(candidates.education)->>'school' AS school
+      FROM candidates
+      WHERE candidates.education IS NOT NULL AND jsonb_array_length(candidates.education) > 0
+    ` },
+    { name: 'degrees', sql: `
+      SELECT jsonb_array_elements(candidates.education)->>'degree' AS degree
+      FROM candidates
+      WHERE candidates.education IS NOT NULL AND jsonb_array_length(candidates.education) > 0
+    ` },
+    { name: 'languages', sql: `
+      SELECT jsonb_array_elements(candidates.languages)->>'name' AS lang
+      FROM candidates
+      WHERE candidates.languages IS NOT NULL AND jsonb_array_length(candidates.languages) > 0
+    ` },
+    { name: 'industries', sql: `
+      SELECT industry, COUNT(*)::text AS count
+      FROM candidates
+      WHERE industry IS NOT NULL AND industry != ''
+      GROUP BY industry
+      ORDER BY COUNT(*) DESC
+    ` },
+    { name: 'regions', sql: `
+      SELECT region, COUNT(*)::text AS count
+      FROM candidates
+      WHERE region IS NOT NULL AND region != '' AND region != 'Unknown/Global'
+      GROUP BY region
+      ORDER BY COUNT(*) DESC
+    ` },
+  ]
+
+  const results: Record<string, any> = {}
+
+  for (const query of queries) {
+    try {
+      const result = await pool.query(query.sql)
+      results[query.name] = result
+    } catch (err: any) {
+      console.error(`[Autocomplete] Query "${query.name}" failed:`, err.message)
+      results[query.name] = { rows: [] }
+    }
+  }
+
+  const { skills: rawSkillsRes, locations: locRes, titles: titleRes, companies: compRes,
+          schools: schoolRes, degrees: degreeRes, languages: langRes, industries: indRes, regions: regRes } = results
 
     // ── 1. Process Skills ──
     const dbCounts = new Map<string, number>()
@@ -1013,10 +1031,10 @@ async function refreshCache() {
     cache.language = [...langCounts.entries()].sort((a, b) => b[1] - a[1]).map(([value, count]) => ({ value: value.charAt(0).toUpperCase() + value.slice(1), label: value.charAt(0).toUpperCase() + value.slice(1), count, type: 'language' as const }))
 
     // ── 8. Process Industries ──
-    cache.industry = indRes.rows.filter(r => r.industry.trim().length >= 2).map(r => ({ value: r.industry.trim(), label: r.industry.trim(), count: parseInt(r.count, 10), type: 'industry' as const }))
+    cache.industry = indRes.rows.filter((r: { industry: string; count: string }) => r.industry.trim().length >= 2).map((r: { industry: string; count: string }) => ({ value: r.industry.trim(), label: r.industry.trim(), count: parseInt(r.count, 10), type: 'industry' as const }))
 
     // ── 9. Process Regions ──
-    cache.region = regRes.rows.filter(r => r.region.trim().length >= 2).map(r => ({ value: r.region.trim(), label: r.region.trim(), count: parseInt(r.count, 10), type: 'region' as const }))
+    cache.region = regRes.rows.filter((r: { region: string; count: string }) => r.region.trim().length >= 2).map((r: { region: string; count: string }) => ({ value: r.region.trim(), label: r.region.trim(), count: parseInt(r.count, 10), type: 'region' as const }))
 
     cache.lastRefresh = Date.now()
     console.log(

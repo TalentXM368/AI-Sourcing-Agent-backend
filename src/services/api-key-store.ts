@@ -1,5 +1,6 @@
 import { pool } from '../db/index.js'
 import { decryptKey, encryptKey, maskKey } from './key-encryption.js'
+import { getRequestOrganizationId } from './request-context.js'
 
 // Provider definitions: DB key → env fallback
 export const PROVIDERS = {
@@ -47,9 +48,9 @@ const keyCache = new Map<string, string | null>()
 let lastLoad = 0
 const CACHE_TTL = 30_000
 
-async function loadKey(providerId: ProviderId, force = false): Promise<string | null> {
+async function loadKey(providerId: ProviderId, organizationId: string | undefined, force = false): Promise<string | null> {
   const now = Date.now()
-  const cacheKey = `api_key:${providerId}`
+  const cacheKey = organizationId ? `org:${organizationId}:api_key:${providerId}` : `api_key:${providerId}`
 
   if (!force && keyCache.has(cacheKey)) {
     return keyCache.get(cacheKey) ?? null
@@ -80,9 +81,11 @@ async function loadKey(providerId: ProviderId, force = false): Promise<string | 
   }
 }
 
-export async function getApiKey(providerId: ProviderId): Promise<string | null> {
-  const dbKey = await loadKey(providerId)
+export async function getApiKey(providerId: ProviderId, organizationId = getRequestOrganizationId()): Promise<string | null> {
+  const dbKey = await loadKey(providerId, organizationId)
   if (dbKey) return dbKey
+
+  if (organizationId) return null
 
   // Fall back to environment variables
   const provider = PROVIDERS[providerId]
@@ -94,9 +97,9 @@ export async function getApiKey(providerId: ProviderId): Promise<string | null> 
   return null
 }
 
-export async function saveApiKey(providerId: ProviderId, plainTextKey: string): Promise<void> {
+export async function saveApiKey(providerId: ProviderId, plainTextKey: string, organizationId: string): Promise<void> {
   const encrypted = encryptKey(plainTextKey)
-  const dbKey = `api_key:${providerId}`
+  const dbKey = `org:${organizationId}:api_key:${providerId}`
 
   await pool.query(
     `INSERT INTO settings (key, value, updated_at) VALUES ($1, $2::json, NOW())
@@ -107,21 +110,23 @@ export async function saveApiKey(providerId: ProviderId, plainTextKey: string): 
   keyCache.set(dbKey, plainTextKey)
 }
 
-export async function deleteApiKey(providerId: ProviderId): Promise<void> {
-  const dbKey = `api_key:${providerId}`
+export async function deleteApiKey(providerId: ProviderId, organizationId: string): Promise<void> {
+  const dbKey = `org:${organizationId}:api_key:${providerId}`
   await pool.query('DELETE FROM settings WHERE key = $1', [dbKey])
   keyCache.delete(dbKey)
 }
 
-export async function getApiKeyStatus(providerId: ProviderId): Promise<{
+export async function getApiKeyStatus(providerId: ProviderId, organizationId = getRequestOrganizationId()): Promise<{
   configured: boolean
   source: 'database' | 'env' | 'none'
   masked: string | null
 }> {
-  const dbKey = await loadKey(providerId)
+  const dbKey = await loadKey(providerId, organizationId)
   if (dbKey) {
     return { configured: true, source: 'database', masked: maskKey(dbKey) }
   }
+
+  if (organizationId) return { configured: false, source: 'none', masked: null }
 
   // Check env
   const provider = PROVIDERS[providerId]

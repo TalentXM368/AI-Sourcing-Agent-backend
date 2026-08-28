@@ -18,6 +18,7 @@ import { advancedSearchRouter } from './routes/advanced-search.js'
 import { resumeSearchRouter } from './routes/resume-search.js'
 import { pipelineRouter } from './routes/pipeline.js'
 import { searchHistoryRouter } from './routes/search-history.js'
+import { projectsRouter } from './routes/projects.js'
 import { autocompleteRouter } from './routes/autocomplete.js'
 import { benchmarkRouter } from './routes/benchmark.js'
 import intelligenceRouter from './modules/candidate-intelligence/routes/intelligence.routes.js'
@@ -31,6 +32,9 @@ import { getBenchmarkRouter } from './modules/benchmark/factory.js'
 import { createProcessingRouter } from './routes/processing.js'
 import { createAIEvaluationRouter } from './routes/ai-evaluation.js'
 import { loadMatchingModeFromDB } from './services/pipeline-toggle.js'
+import { authRouter } from './routes/auth.js'
+import { accountRouter } from './routes/account.js'
+import { attachAuth, requireAuth } from './middleware/auth.js'
 
 const app = express()
 
@@ -60,6 +64,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 // ─── Routes ───────────────────────────────────────────────────
 
 app.use('/api/health', healthRouter)
+app.use('/api/auth', authRouter)
+app.use(attachAuth)
+app.use('/api', requireAuth)
+app.use('/api', accountRouter)
 app.use('/api/webhooks', webhooksRouter)
 app.use('/api/jobs', jobsRouter)
 app.use('/api/candidates', pdlSearchRouter)
@@ -69,6 +77,7 @@ app.use('/api/candidates', kaggleSearchRouter)
 app.use('/api/candidates', coresignalSearchRouter)
 app.use('/api/candidates', searchAllRouter)
 app.use('/api', searchHistoryRouter)
+app.use('/api', projectsRouter)
 app.use('/api/autocomplete', autocompleteRouter)
 app.use('/api/candidates', candidatesRouter)
 app.use('/api/clients', clientsRouter)

@@ -29,11 +29,19 @@ function getQueueName(jobType: JobType): QueueName {
   }
 }
 
+function getConnectionOrThrow(): ReturnType<typeof getRedisConnection> {
+  const conn = getRedisConnection();
+  if (!conn) {
+    throw new Error('Redis not configured (REDIS_URL not set). Cannot create queue/worker.');
+  }
+  return conn;
+}
+
 export function getQueue(jobType: JobType): Queue {
   const queueName = getQueueName(jobType);
   if (!queues.has(queueName)) {
     queues.set(queueName, new Queue(queueName, {
-      connection: getRedisConnection(),
+      connection: getConnectionOrThrow(),
       defaultJobOptions: DEFAULT_JOB_OPTIONS,
     }));
   }
@@ -68,7 +76,7 @@ export function registerWorker(
       throw error;
     }
   }, {
-    connection: getRedisConnection(),
+    connection: getConnectionOrThrow(),
     concurrency: 5,
     limiter: { max: 10, duration: 1000 },
   });
@@ -83,7 +91,7 @@ export function registerWorker(
 
   workers.set(queueName, worker);
 
-  const events = new QueueEvents(queueName, { connection: getRedisConnection() });
+  const events = new QueueEvents(queueName, { connection: getConnectionOrThrow() });
   queueEvents.set(queueName, events);
 
   return worker;
