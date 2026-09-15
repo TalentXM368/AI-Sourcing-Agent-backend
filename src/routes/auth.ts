@@ -68,7 +68,7 @@ authRouter.post('/signup', async (req: Request, res: Response) => {
 authRouter.post('/login', async (req: Request, res: Response) => {
   try {
     const body = z.object({ email: emailSchema, password: z.string().min(1).max(128) }).parse(req.body)
-    const user = await db.selectFrom('users').selectAll().where('email', '=', body.email).executeTakeFirst()
+    const user = await db.selectFrom('users').select(['id', 'first_name', 'last_name', 'email', 'password_hash', 'onboarding_role', 'status', 'created_at', 'updated_at', 'last_login_at']).where('email', '=', body.email).executeTakeFirst()
     if (!user || user.status !== 'ACTIVE' || !(await verifyPassword(body.password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid email or password.' })
     }

@@ -12,8 +12,10 @@ export function registerIndexingWorker() {
       return { skipped: true, reason: 'EmbeddingService not available' };
     }
 
-    const table = entityType === 'candidate' ? 'candidates' : 'jobs';
-    const row = await pool.query(`SELECT * FROM ${table} WHERE id = $1`, [entityId]);
+    const query = entityType === 'candidate'
+      ? `SELECT name, headline, location, summary, skills, raw_text FROM candidates WHERE id = $1`
+      : `SELECT role, company, location, required_skills FROM jobs WHERE id = $1`;
+    const row = await pool.query(query, [entityId]);
     if (row.rows.length === 0) throw new Error(`${entityType} ${entityId} not found`);
 
     const record = row.rows[0];

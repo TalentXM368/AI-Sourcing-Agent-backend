@@ -38,7 +38,7 @@ accountRouter.post('/profile/password', async (req: Request, res: Response) => {
 })
 
 accountRouter.get('/organization', async (req: Request, res: Response) => {
-  const organization = await db.selectFrom('organizations').selectAll().where('id', '=', req.auth!.organizationId).executeTakeFirstOrThrow()
+  const organization = await db.selectFrom('organizations').select(['id', 'name', 'website', 'industry', 'company_size', 'country', 'logo_url', 'onboarding_completed', 'created_at', 'updated_at']).where('id', '=', req.auth!.organizationId).executeTakeFirstOrThrow()
   res.json(organization)
 })
 

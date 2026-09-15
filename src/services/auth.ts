@@ -3,7 +3,7 @@ import { createHash, randomBytes, randomUUID } from 'crypto'
 import { db } from '../db/index.js'
 
 export const SESSION_COOKIE = 'sourcing_session'
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30
+export const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 365
 const RESET_TTL_MS = 1000 * 60 * 60
 
 export type MemberRole = 'OWNER' | 'ADMIN' | 'RECRUITER' | 'HIRING_MANAGER' | 'MEMBER'
@@ -67,7 +67,11 @@ export async function getAuthUser(token: string | undefined): Promise<AuthUser |
     .executeTakeFirst()
 
   if (!row) return null
-  await db.updateTable('sessions').set({ last_used_at: new Date() }).where('id', '=', row.session_id).execute()
+  const now = new Date()
+  await db.updateTable('sessions')
+    .set({ last_used_at: now, expires_at: new Date(now.getTime() + SESSION_TTL_MS) })
+    .where('id', '=', row.session_id)
+    .execute()
   return {
     id: row.user_id,
     firstName: row.first_name,

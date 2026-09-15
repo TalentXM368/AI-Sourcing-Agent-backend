@@ -16,7 +16,7 @@ projectsRouter.get('/projects', async (req: Request, res: Response) => {
              j.role AS job_role, j.company AS job_company,
              c.account_name AS client_name,
              COUNT(pc.id)::int AS candidate_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'placed')::int AS placed_count
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'placed')::int AS placed_count
       FROM projects p
       LEFT JOIN jobs j ON j.id = p.job_id
       LEFT JOIN clients c ON c.id = p.client_id
@@ -72,14 +72,14 @@ projectsRouter.get('/projects/:id', async (req: Request, res: Response) => {
              j.required_skills AS job_skills,
              c.account_name AS client_name,
              COUNT(pc.id)::int AS candidate_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'placed')::int AS placed_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'new')::int AS new_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'contacted')::int AS contacted_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'screening')::int AS screening_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'interviewing')::int AS interviewing_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'offered')::int AS offered_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'rejected')::int AS rejected_count,
-             COUNT(pc.id) FILTER (WHERE pc.stage = 'withdrawn')::int AS withdrawn_count
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'placed')::int AS placed_count,
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'new')::int AS new_count,
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'contacted')::int AS contacted_count,
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'screening')::int AS screening_count,
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'interviewing')::int AS interviewing_count,
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'offered')::int AS offered_count,
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'rejected')::int AS rejected_count,
+             COUNT(pc.id) FILTER (WHERE LOWER(TRIM(pc.stage)) = 'withdrawn')::int AS withdrawn_count
       FROM projects p
       LEFT JOIN jobs j ON j.id = p.job_id
       LEFT JOIN clients c ON c.id = p.client_id
@@ -297,11 +297,10 @@ projectsRouter.get('/projects/:id/pipeline', async (req: Request, res: Response)
     }
 
     const result = await pool.query(`
-      SELECT pc.id AS project_candidate_id, pc.stage, pc.notes, pc.added_from,
+      SELECT pc.id AS project_candidate_id, LOWER(TRIM(pc.stage)) AS stage, pc.notes, pc.added_from,
              pc.created_at AS added_at,
              c.id, c.name, c.email, c.phone, c.linkedin_url, c.github_url,
-             c.headline, c.location, c.summary, c.resume_url, c.experience_years, c.skills, c.companies,
-             c.work_history, c.education, c.projects, c.certifications, c.languages,
+             c.headline, c.location, c.resume_url, c.experience_years, c.skills, c.companies,
              c.data_quality_score, c.source, c.industry, c.region
       FROM project_candidates pc
       JOIN candidates c ON c.id = pc.candidate_id

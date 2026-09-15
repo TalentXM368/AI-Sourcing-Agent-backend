@@ -49,21 +49,24 @@ function computeParseConfidence(result: ParsedCandidate, source: 'ai' | 'ai+rege
 // Returns true if AI output is incomplete and needs regex supplementation
 
 function isWeakResult(r: ParsedCandidate): boolean {
-  const hasName = r.name && r.name !== 'Unknown'
+  const hasName = r.name && r.name !== 'Unknown' && r.name.length >= 2
   const hasContact = !!(r.email || r.phone || r.linkedin_url)
-  const hasSkills = r.skills.length >= 2
+  const hasSkills = r.skills.length >= 1
   const hasWork = r.work_history.length >= 1
   const hasEdu = r.education.length >= 1
   const score = [hasContact, hasSkills, hasWork, hasEdu].filter(Boolean).length
-  return !hasName || score < 2
+  // Only mark as weak if NO name AND very few signals
+  return !hasName || score === 0
 }
 
 // ─── Merge AI + Regex Results ─────────────────────────────────
 // AI is primary, but regex fills in where AI returned empty/null
 
 function mergeResults(regex: ParsedCandidate, ai: ParsedCandidate): ParsedCandidate {
+  const usable = (value: string | undefined) => Boolean(value && value.trim() && value.trim().toLowerCase() !== 'unknown')
+
   return {
-    name: ai.name || regex.name,
+    name: usable(ai.name) ? ai.name : regex.name,
     email: ai.email || regex.email,
     phone: ai.phone || regex.phone,
     linkedin_url: ai.linkedin_url || regex.linkedin_url,
@@ -630,10 +633,13 @@ function extractName(lines: string[]): string {
   const skipPatterns = [
     /@/, /resume/i, /cv/i, /curriculum/i, /phone/i, /email/i, /address/i,
     /linkedin/i, /github/i, /portfolio/i, /http/i, /www\./i,
-    /^\d+/, /^\(/, /objective/i, /summary/i, /profile/i,
-    /location\s/i, /present/i, /experience/i, /education/i, /skills/i,
-    /work\s+history/i, /professional/i, /certification/i,
+    /^\d+/, /^\(/,
+    /objective/i, /summary/i, /profile/i,
+    /location\s/i, /experience\s*history/i, /professional\s*summary/i, /certifications/i,
   ]
+
+  // Build regex patterns once
+  const skipRegexes = skipPatterns
 
   for (const rawLine of lines.slice(0, 8)) {
     if (rawLine.length < 2) continue
@@ -644,8 +650,16 @@ function extractName(lines: string[]): string {
       : rawLine
 
     if (line.length < 2 || line.length > 60) continue
-    if (skipPatterns.some(p => p.test(line))) continue
-    if (SECTION_HEADER_WORDS.has(line.toLowerCase().replace(/[^a-z\s]/g, '').trim())) continue
+
+    const lowerLine = line.toLowerCase().trim()
+
+    // Check skip patterns
+    if (skipRegexes.some(p => p.test(line))) continue
+    if (SECTION_HEADER_WORDS.has(lowerLine.replace(/[^a-z\s]/g, '').trim())) continue
+
+    // Skip lines that look like section headers or dates
+    if (/^(experience|education|skills|projects|certifications|summary|profile|objective|work\s*history|languages|references)/i.test(lowerLine)) continue
+    if (/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(line)) continue
 
     // Clean the name: remove non-alpha, hyphens, dots, leading underscores
     const cleaned = line.replace(/[^a-zA-Z\s\-\.]/g, '').replace(/^[\s\._-]+/, '').trim()

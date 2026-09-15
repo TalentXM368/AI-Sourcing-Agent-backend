@@ -6,7 +6,10 @@ export function registerMatchingWorker() {
   registerWorker('matching', async (data: QueueJobData) => {
     const { jobId } = data as { jobId: string; triggerSource: string };
 
-    const jobRow = await pool.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
+    const jobRow = await pool.query(
+      'SELECT id, role, required_skills, nice_to_have_skills, avoid_skills, experience_min, experience_max FROM jobs WHERE id = $1',
+      [jobId],
+    );
     if (jobRow.rows.length === 0) throw new Error(`Job ${jobId} not found`);
 
     await pool.query(

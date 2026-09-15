@@ -38,13 +38,17 @@ healthRouter.get('/scoring', async (_req, res) => {
       .where('status', '=', 'open')
       .execute()
 
-    const result = await Promise.all(jobs.map(async (job) => {
-      const ranked = await db.selectFrom('ranked_candidates')
-        .select((eb) => eb.fn.count('id').as('count'))
-        .where('job_id', '=', job.id)
-        .executeTakeFirst()
+    const rankedCounts = jobs.length === 0
+      ? []
+      : await db.selectFrom('ranked_candidates')
+        .select(['job_id', (eb) => eb.fn.count('id').as('count')])
+        .where('job_id', 'in', jobs.map((job) => job.id))
+        .groupBy('job_id')
+        .execute()
+    const rankedCountMap = new Map(rankedCounts.map((row) => [row.job_id, Number(row.count)]))
 
-      const rankedCount = Number(ranked?.count ?? 0)
+    const result = jobs.map((job) => {
+      const rankedCount = rankedCountMap.get(job.id) ?? 0
       return {
         id: job.id,
         role: job.role,
@@ -52,7 +56,7 @@ healthRouter.get('/scoring', async (_req, res) => {
         total,
         complete: rankedCount >= total,
       }
-    }))
+    })
 
     const incomplete = result.filter(j => !j.complete)
 

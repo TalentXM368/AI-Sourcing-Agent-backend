@@ -25,3 +25,8 @@ CREATE INDEX IF NOT EXISTS idx_candidates_name ON candidates USING gin (name gin
 -- Composite indexes for common filter combinations
 CREATE INDEX IF NOT EXISTS idx_candidates_source_stage ON candidates (source, stage);
 CREATE INDEX IF NOT EXISTS idx_candidates_source_created ON candidates (source, created_at DESC);
+
+-- Support grouped scoring-health counts and job list ordering.
+CREATE INDEX IF NOT EXISTS idx_ranked_candidates_job_id ON ranked_candidates (job_id);
+CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs (status, created_at DESC);

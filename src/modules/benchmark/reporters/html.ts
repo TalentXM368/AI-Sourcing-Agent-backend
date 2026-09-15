@@ -376,7 +376,7 @@ export function generateHTMLReport(
   <!-- Header -->
   <div class="header">
     <h1>Platform Benchmark Report</h1>
-    <p class="subtitle">Generated: ${new Date().toISOString()} &mdash; AI Sourcing Agent &mdash; Phase 6.5 Validation Suite</p>
+    <p class="subtitle">Generated: ${new Date().toISOString()} &mdash; AI SourcingXM &mdash; Phase 6.5 Validation Suite</p>
   </div>
 
   <!-- Navigation -->
@@ -532,7 +532,7 @@ export function generateHTMLReport(
 
   <!-- Footer -->
   <div class="footer">
-    AI Sourcing Agent &mdash; Benchmark Suite v1.0 &mdash; Generated ${new Date().toISOString()}
+    AI SourcingXM &mdash; Benchmark Suite v1.0 &mdash; Generated ${new Date().toISOString()}
   </div>
 
 </div>

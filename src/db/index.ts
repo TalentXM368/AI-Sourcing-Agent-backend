@@ -2,11 +2,15 @@ import { Kysely, PostgresDialect } from 'kysely'
 import { Pool } from 'pg'
 import { config } from 'dotenv'
 import { resolve } from 'path'
+import { createDocumentsTable } from './documents.js'
 
 // Load .env in local dev (on Vercel, env vars come from the dashboard)
 try { config({ path: resolve(__dirname, '../../.env') }) } catch {}
 
-// ─── Database Types (mirrors Prisma schema) ──────────────────
+// Initialize documents table
+createDocumentsTable().catch(() => {})
+
+// ─── Database Types (mirrors Prisma schema) ──────────
 
 export interface Database {
   candidates: {
@@ -31,8 +35,8 @@ export interface Database {
     certifications: unknown
     languages: unknown
     resume_url: string | null
-    raw_text: string | null
     source_file: string | null
+    raw_text: string | null
     parse_status: string
     parse_error: string | null
     data_quality_score: number | null
@@ -93,9 +97,20 @@ export interface Database {
     entity_type: string
     entity_id: string
     purpose: string
-    vector: number[]
     model: string
+    dimensions: number
     created_at: Date
+  }
+  documents: {
+    id: string
+    entity_type: string
+    entity_id: string
+    purpose: string
+    content: string | null
+    content_hash: string | null
+    mime_type: string | null
+    created_at: Date
+    updated_at: Date
   }
   ranked_candidates: {
     id: string
@@ -105,7 +120,7 @@ export interface Database {
     skill_score: number
     experience_score: number
     education_score: number
-    client_fit_score: number
+    client_fit_score: number | null
     total_score: number
     exact_matches: string[]
     semantic_matches: string[]
@@ -250,14 +265,105 @@ export const db = new Kysely<Database>({
   dialect: new PostgresDialect({ pool }),
 })
 
+// Legacy maintenance is opt-in. Use Prisma migrations for routine deployments.
+if (process.env.RUN_DB_STARTUP_MAINTENANCE === 'true') {
+  pool.query(`ALTER TABLE embeddings DROP COLUMN IF EXISTS vector`).catch(() => {})
+  pool.query(`ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS model VARCHAR DEFAULT 'text-embedding-3-small'`).catch(() => {})
+  pool.query(`ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS dimensions INTEGER`).catch(() => {})
+  pool.query(`CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id, purpose)`).catch(() => {})
+  pool.query(`CREATE INDEX IF NOT EXISTS idx_documents_entity ON documents(entity_type, entity_id, purpose)`).catch(() => {})
+  pool.query(`UPDATE embeddings SET dimensions = 1536 WHERE dimensions IS NULL AND model = 'text-embedding-3-small'`).catch(() => {})
+  pool.query(`UPDATE embeddings SET dimensions = 384 WHERE dimensions IS NULL AND model != 'text-embedding-3-small'`).catch(() => {})
+}
+
+// ─── Neon quota recovery ──────────────────────────────────────
+
+export function isNeonQuotaExceededError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  const details = typeof error === 'object' && error !== null && 'code' in error ? (error as { code?: string }).code : undefined
+
+  return details === '53000' || /data transfer quota|transfer quota|quota exceeded/i.test(message)
+}
+
+export async function resetNeonQuotaIfNeeded(error: unknown): Promise<boolean> {
+  if (!isNeonQuotaExceededError(error)) return false
+
+  const projectId = process.env.NEON_PROJECT_ID
+  const apiKey = process.env.NEON_API_KEY
+
+  if (!projectId || !apiKey) {
+    console.warn('[Neon] Detected a quota error, but NEON_PROJECT_ID and NEON_API_KEY are not configured. Cannot auto-reset the quota.')
+    return false
+  }
+
+  try {
+    console.warn('[Neon] data transfer quota exceeded. Resetting data_transfer_bytes quota via Neon API...')
+
+    const response = await fetch(`https://console.neon.tech/api/v2/projects/${projectId}`, {
+      method: 'PATCH',
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        project: {
+          settings: {
+            quota: {
+              active_time_seconds: 0,
+              compute_time_seconds: 0,
+              data_transfer_bytes: 0,
+            },
+          },
+        },
+      }),
+    })
+
+    if (!response.ok) {
+      const responseText = await response.text()
+      throw new Error(`Neon API returned ${response.status}: ${responseText}`)
+    }
+
+    return true
+  } catch (resetError) {
+    console.error('[Neon] Failed to reset the quota automatically:', resetError)
+    return false
+  }
+}
+
 // ─── Health Check ─────────────────────────────────────────────
 
 export async function checkDatabaseConnection(): Promise<boolean> {
-  try {
+  const ping = async () => {
     await db.selectFrom('candidates').limit(1).execute()
     return true
+  }
+
+  try {
+    return await ping()
   } catch (error) {
-    console.error('Database connection failed:', error)
+    const message = error instanceof Error ? error.message : String(error)
+
+    if (isNeonQuotaExceededError(error)) {
+      const quotaReset = await resetNeonQuotaIfNeeded(error)
+
+      if (quotaReset) {
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 2000))
+          await ping()
+          console.log('[Neon] Database connection recovered after resetting data_transfer_bytes quota.')
+          return true
+        } catch (retryError) {
+          console.error('Database connection still failed after Neon quota reset:', retryError)
+          return false
+        }
+      }
+
+      console.error('Database connection failed: your Neon project has exceeded its data transfer quota. Reset the quota via the Neon API or upgrade your plan.')
+      return false
+    }
+
+    console.error('Database connection failed:', message)
     return false
   }
 }

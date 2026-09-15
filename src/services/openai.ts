@@ -20,10 +20,12 @@ function smartTruncate(text: string, maxChars: number): string {
     truncated.lastIndexOf('!'),
     truncated.lastIndexOf('?'),
     truncated.lastIndexOf('\n'),
+    truncated.lastIndexOf('\n\n'),
   )
-  return lastSentence > maxChars * 0.8
-    ? truncated.slice(0, lastSentence + 1)
-    : truncated
+  // Never truncate before the first 500 chars (name/contact area)
+  const safeMin = 500
+  const safeLast = Math.max(lastSentence, safeMin)
+  return truncated.slice(0, Math.min(safeLast + 1, truncated.length))
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -663,42 +665,33 @@ function crossValidate(results: ParsedCandidate[]): ParsedCandidate {
 // ═══════════════════════════════════════════════════════════════
 
 export async function parseResumeWithAI(text: string): Promise<ParsedCandidate> {
-  // Fire ALL providers in parallel
-  const settled = await Promise.allSettled([
-    parseWithGroq(text),
-    parseWithPollinations(text),
-    parseWithXAI(text),
-    parseWithOpenAI(text),
-    parseWithClaude(text),
-    parseWithGemini(text),
-  ])
+  // Try providers SEQUENTIALLY (Groq first = most reliable), stop at first success
+  const providers = [
+    { name: 'Groq', fn: () => parseWithGroq(text) },
+    { name: 'OpenAI', fn: () => parseWithOpenAI(text) },
+    { name: 'xAI', fn: () => parseWithXAI(text) },
+    { name: 'Claude', fn: () => parseWithClaude(text) },
+    { name: 'Gemini', fn: () => parseWithGemini(text) },
+    { name: 'Pollinations', fn: () => parseWithPollinations(text) },
+  ]
 
-  // Collect successful results
-  const successful: ParsedCandidate[] = []
-  const providerNames = ['Groq', 'Pollinations', 'xAI', 'OpenAI', 'Claude', 'Gemini']
-  for (let i = 0; i < settled.length; i++) {
-    const result = settled[i]
-    if (result.status === 'fulfilled' && result.value) {
-      successful.push(result.value)
-      console.log(`  [Parser] ${providerNames[i]} succeeded`)
-    } else {
-      const reason = result.status === 'rejected' ? result.reason?.message?.slice(0, 60) : 'null'
-      console.log(`  [Parser] ${providerNames[i]} failed: ${reason}`)
+  for (const provider of providers) {
+    try {
+      const result = await provider.fn()
+      if (result && result.name && result.name !== 'Unknown') {
+        result.work_history = dedupWorkHistory(result.work_history)
+        result.confidence = { overall: 0.8, name: 1, contact: 0.8, skills: 0.8, experience: 0.8, education: 0.8 }
+        result.parse_source = 'ai'
+        console.log(`[Parser] ${provider.name} succeeded`)
+        return result
+      }
+    } catch (e: any) {
+      console.log(`[Parser] ${provider.name} failed: ${e.message?.slice(0,60)}`)
     }
   }
 
-  if (successful.length === 0) {
-    throw new Error('All AI providers failed')
-  }
-
-  // Cross-validate between all successful results
-  let final = successful.length >= 2 ? crossValidate(successful) : successful[0]
-  console.log(`  [Parser] Cross-validated from ${successful.length} provider(s)`)
-
-  // Validate with a second AI pass (catches wrong names, locations, etc.)
-  final = await validateWithAI(text, final)
-
-  return final
+  // All AI providers failed — throw so resume-parser falls back to regex
+  throw new Error('All AI providers failed, falling back to regex')
 }
 
 // Backward-compatible alias

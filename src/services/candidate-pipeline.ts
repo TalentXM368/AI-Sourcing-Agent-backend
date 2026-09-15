@@ -144,22 +144,21 @@ export async function runFullCandidatePipeline(
     ],
   );
 
-  // Phase 4: Embedding
+  // Phase 4: Embedding (metadata only; vectors go to Qdrant)
   await setStage('candidate', candidateId, 'embedding', 'running');
   try {
     const { generateEmbeddings } = await import('../services/openai.js');
     const fullText = [name, headline, location, summary, skillsJson, doc.plainText || ''].filter(Boolean).join(' ');
     const skillsText = (profile.skills || []).map((s: any) => s.canonical || s.raw).join(' ');
     const roleText = headline || '';
-    const vectors = await generateEmbeddings([fullText, skillsText, roleText]);
-    const purposes = ['full_text', 'skills', 'role'];
-    const models = [process.env.EMBEDDING_MODEL || 'local', process.env.EMBEDDING_MODEL || 'local', process.env.EMBEDDING_MODEL || 'local'];
-    for (let i = 0; i < vectors.length && i < purposes.length; i++) {
+    await generateEmbeddings([fullText, skillsText, roleText])
+    const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+    for (const purpose of ['full_text', 'skills', 'role']) {
       await pool.query(
-        `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-         VALUES (gen_random_uuid(), 'candidate', $1, $2, $3, $4, NOW())
-         ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = $4`,
-        [candidateId, purposes[i], vectors[i], models[i]],
+        `INSERT INTO embeddings (id, entity_type, entity_id, purpose, model, dimensions, created_at)
+         VALUES (gen_random_uuid(), 'candidate', $1, $2, 'text-embedding-3-small', $3, NOW())
+         ON CONFLICT (entity_type, entity_id, purpose) DO NOTHING`,
+        [candidateId, purpose, embedDim],
       );
     }
     await completeStage('candidate', candidateId, 'embedding');

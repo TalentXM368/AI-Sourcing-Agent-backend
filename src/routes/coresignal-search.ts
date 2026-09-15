@@ -196,9 +196,9 @@ async function indexCoresignalCandidates(candidateIds: string[]) {
   for (const id of candidateIds) {
     try {
       const candidate = await db.selectFrom('candidates')
-        .selectAll()
+        .select(['id', 'name', 'email', 'phone', 'linkedin_url', 'github_url', 'portfolio_url', 'headline', 'location', 'summary', 'experience_years', 'skills', 'companies', 'work_history', 'education', 'projects', 'certifications', 'languages', 'resume_url', 'source_file', 'parse_status', 'data_quality_score', 'missing_fields', 'stage', 'industry', 'region', 'source', 'pdl_id', 'coresignal_id', 'so_id', 'created_at', 'updated_at'])
         .where('id', '=', id)
-        .executeTakeFirst()
+        .executeTakeFirst() as any
 
       if (!candidate) continue
 

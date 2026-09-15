@@ -93,6 +93,19 @@ function isValidPersonName(name: string): boolean {
   return true
 }
 
+function findNameFromResumeText(text: string): string | undefined {
+  const ignored = /^(resume|curriculum vitae|cv|profile|contact|personal details|professional summary)$/i
+  const lines = text.split(/\r?\n/).map(line => line.replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 15)
+
+  for (const line of lines) {
+    if (line.length < 3 || line.length > 60 || ignored.test(line)) continue
+    if (line.includes('@') || /https?:\/\//i.test(line) || /\d{5,}/.test(line)) continue
+    const candidate = line.replace(/^[|•·\-–—]+|[|•·\-–—]+$/g, '').trim()
+    if (isValidPersonName(candidate) && candidate.split(/\s+/).length >= 2) return candidate
+  }
+  return undefined
+}
+
 // ─── Extract public_id from Cloudinary URL ────────────────────
 // "https://res.cloudinary.com/dluwum789/raw/upload/v1782910497/candidates/Resumes/654774000016534067_Esteban.pdf"
 // → "candidates/Resumes/654774000016534067_Esteban.pdf"
@@ -108,19 +121,18 @@ async function deleteEmbeddings(entityId: string): Promise<void> {
   await pool.query('DELETE FROM embeddings WHERE entity_id = $1', [entityId])
 }
 
-async function insertEmbeddings(
+async function insertEmbeddingsMetadata(
   entityId: string,
-  vectors: Array<{ purpose: string; vector: number[] }>,
+  dimensions: number,
+  purpose: string,
   entityType: string = 'candidate'
 ): Promise<void> {
-  for (const v of vectors) {
-    await pool.query(
-      `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-       VALUES ($1, $2, $3, $4, $5, 'text-embedding-3-small', NOW())
-       ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $5, model = 'text-embedding-3-small'`,
-      [randomUUID(), entityType, entityId, v.purpose, v.vector]
-    )
-  }
+  await pool.query(
+    `INSERT INTO embeddings (id, entity_type, entity_id, purpose, model, dimensions, created_at)
+     VALUES ($1, $2, $3, $4, 'text-embedding-3-small', $5, NOW())
+     ON CONFLICT (entity_type, entity_id, purpose) DO NOTHING`,
+    [randomUUID(), entityType, entityId, purpose, dimensions]
+  )
 }
 
 // ─── Sync Resumes from Cloudinary (small batch) ───────────────
@@ -231,7 +243,6 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
             projects: JSON.stringify(parsed.projects),
             certifications: JSON.stringify(parsed.certifications),
             languages: JSON.stringify(parsed.languages),
-            raw_text: text,
             data_quality_score: quality.quality_score,
             missing_fields: quality.missing_fields,
             industry: industryResult.industry,
@@ -243,17 +254,22 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
           .where('id', '=', candidateId)
           .execute()
 
+        // Store raw_text in documents table
         try {
-          const skillsText = parsed.skills.map((s: any) => s.name).join(' ')
-          const roleText = parsed.headline || parsed.companies[0]?.title || ''
-          const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
-          await deleteEmbeddings(candidateId)
-          await insertEmbeddings(candidateId, [
-            { purpose: 'full_text', vector: fullVec },
-            { purpose: 'skills', vector: skillsVec },
-            { purpose: 'role', vector: roleVec },
-          ])
-          await indexCandidateToQdrant({
+          const { insertDocument } = await import('../db/documents.js')
+          await insertDocument(candidateId, 'candidate', 'raw_text', text)
+        } catch {}
+
+try {
+	           const skillsText = parsed.skills.map((s: any) => s.name).join(' ')
+	           const roleText = parsed.headline || parsed.companies[0]?.title || ''
+	           const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+	           await deleteEmbeddings(candidateId)
+	           const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+	           await insertEmbeddingsMetadata(candidateId, embedDim, 'full_text')
+	           await insertEmbeddingsMetadata(candidateId, embedDim, 'skills')
+	           await insertEmbeddingsMetadata(candidateId, embedDim, 'role')
+	           await indexCandidateToQdrant({
             candidateId,
             name: candidateName,
             fullVector: fullVec,
@@ -475,24 +491,25 @@ async function processBulkSync(
               education: JSON.stringify(parsed.education),
               projects: JSON.stringify(parsed.projects),
               certifications: JSON.stringify(parsed.certifications),
-              languages: JSON.stringify(parsed.languages),
-              raw_text: text,
-              data_quality_score: quality.quality_score,
-              missing_fields: quality.missing_fields,
-              industry: industryResult.industry,
-              region: regionResult,
-              parse_status: 'completed',
-              parse_error: null,
-              updated_at: new Date(),
-            })
-            .where('id', '=', candidateId)
-            .execute()
+languages: JSON.stringify(parsed.languages),
+               data_quality_score: quality.quality_score,
+               missing_fields: quality.missing_fields,
+               industry: industryResult.industry,
+               region: regionResult,
+               parse_status: 'completed',
+               parse_error: null,
+               updated_at: new Date(),
+             })
+             .where('id', '=', candidateId)
+             .execute()
 
-          // ── EMBEDDINGS + QDRANT ──
-          // Skip embeddings during bulk sync — add them later via separate script
-          // This prevents server crashes from OpenAI rate limits + memory pressure
+             // Store raw_text in documents table
+             try {
+               const { insertDocument } = await import('../db/documents.js')
+               await insertDocument(candidateId, 'candidate', 'raw_text', text)
+             } catch {}
 
-          console.log(`[Sync Full] ${candidateName} — q=${quality.quality_score} skills=${skillNames.length} work=${parsed.work_history.length} edu=${parsed.education.length}`)
+             console.log(`[Sync Full] ${candidateName} — q=${quality.quality_score} skills=${skillNames.length} work=${parsed.work_history.length} edu=${parsed.education.length}`)
           existingUrls.add(file.secure_url)
           synced++
           return 'synced'
@@ -718,15 +735,14 @@ async function reprocessAll(
             education: JSON.stringify(parsed.education),
             projects: JSON.stringify(parsed.projects),
             certifications: JSON.stringify(parsed.certifications),
-            languages: JSON.stringify(parsed.languages),
-            raw_text: text,
-            data_quality_score: quality.quality_score,
-            missing_fields: quality.missing_fields,
-            industry: industryResult.industry,
-            region: regionResult,
-            parse_status: 'completed',
-            parse_error: null,
-            updated_at: new Date(),
+languages: JSON.stringify(parsed.languages),
+           data_quality_score: quality.quality_score,
+           missing_fields: quality.missing_fields,
+           industry: industryResult.industry,
+           region: regionResult,
+           parse_status: 'completed',
+           parse_error: null,
+           updated_at: new Date(),
           })
           .where('id', '=', c.id)
           .execute()
@@ -747,6 +763,10 @@ async function reprocessAll(
 // ─── Sync All JDs from Cloudinary ────────────────────────────
 
 uploadRouter.post('/sync-jds', async (req: Request, res: Response) => {
+  // Disabled: JDs must be uploaded or created by an authenticated user.
+  return res.status(410).json({ synced: 0, skipped: 0, failed: 0, total: 0, message: 'Cloudinary JD sync is disabled. Upload or create a job from the application.' })
+
+  /*
   try {
     const folder = req.body.folder || 'candidates/JDs'
 
@@ -832,6 +852,7 @@ uploadRouter.post('/sync-jds', async (req: Request, res: Response) => {
     console.error('[JD Sync] Error:', error)
     res.status(500).json({ error: String(error) })
   }
+  */
 })
 
 // ─── List Cloudinary Files ────────────────────────────────────
@@ -873,6 +894,7 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
     // Check for existing candidates by filename for dedup
     const existingCandidates = await db.selectFrom('candidates')
       .select(['name', 'source_file', 'email'])
+      .where('created_by_id', '=', req.auth!.id)
       .execute()
     const existingFiles = new Set(existingCandidates.map(c => c.source_file?.toLowerCase().trim()).filter(Boolean))
 
@@ -892,6 +914,8 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
 
       await db.insertInto('candidates').values({
         id: candidateId,
+        organization_id: req.auth!.organizationId,
+        created_by_id: req.auth!.id,
         name: 'Processing...',
         source_file: file.name,
         parse_status: 'processing',
@@ -937,6 +961,10 @@ async function processFilesInBackground(
 
     try {
       const buffer = Buffer.from(b64Buffer, 'base64')
+      const detectedMimetype = detectMimetype(fileName)
+      if (!mimetype || mimetype === 'application/octet-stream' || detectedMimetype !== 'application/octet-stream') {
+        mimetype = detectedMimetype
+      }
 
       // ── TEXT EXTRACTION: pdftext best, fallback to extraction ──
       let text = ''
@@ -955,8 +983,8 @@ async function processFilesInBackground(
         text = await extractTextFromBuffer(buffer, mimetype)
       }
 
-      // ── FIELD PARSING: regex only ──
-      const parsed = parseResumeRegex(text)
+      // ── FIELD PARSING: hybrid AI + regex ──
+      const parsed = await parseResume(text)
 
       let candidateName = parsed.name
       if (!isValidPersonName(candidateName)) {
@@ -964,9 +992,21 @@ async function processFilesInBackground(
         if (nameFromFilename) candidateName = nameFromFilename
       }
       if (!isValidPersonName(candidateName) && text) {
-        const firstLine = text.split('\n').find(l => l.trim().length > 2 && l.trim().length < 60) || ''
-        const firstName = firstLine.trim().replace(/[^a-zA-Z\s.]/g, '').trim()
-        if (isValidPersonName(firstName)) candidateName = firstName
+        const textName = findNameFromResumeText(text)
+        if (textName) candidateName = textName
+      }
+
+      if (!isValidPersonName(candidateName)) {
+        throw new Error('Could not identify a valid candidate name')
+      }
+
+      const hasProfileData = Boolean(
+        parsed.email || parsed.phone || parsed.linkedin_url || parsed.github_url ||
+        parsed.headline || parsed.summary || parsed.skills.length ||
+        parsed.work_history.length || parsed.education.length || parsed.projects.length,
+      )
+      if (!hasProfileData) {
+        throw new Error('Resume text was extracted, but no candidate profile data could be identified')
       }
 
       const quality = computeDataQuality(parsed as any)
@@ -993,31 +1033,35 @@ async function processFilesInBackground(
           education: JSON.stringify(parsed.education),
           projects: JSON.stringify(parsed.projects),
           certifications: JSON.stringify(parsed.certifications),
-          languages: JSON.stringify(parsed.languages),
-          raw_text: text,
-          data_quality_score: quality.quality_score,
+languages: JSON.stringify(parsed.languages),
+           data_quality_score: quality.quality_score,
           missing_fields: quality.missing_fields,
           industry: industryResult.industry,
           region: regionResult,
           parse_status: 'completed',
           parse_error: null,
           updated_at: new Date(),
-        })
-        .where('id', '=', candidateId)
-        .execute()
+})
+         .where('id', '=', candidateId)
+         .execute()
 
-      // Generate embeddings
+       // Store raw_text in documents table
+       try {
+         const { insertDocument } = await import('../db/documents.js')
+         await insertDocument(candidateId, 'candidate', 'raw_text', text)
+       } catch {}
+
+       // Generate embeddings
       try {
         const skillsText = parsed.skills.map((s: any) => s.name).join(' ')
         const roleText = parsed.headline || parsed.companies[0]?.title || ''
         const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
-        await deleteEmbeddings(candidateId)
-        await insertEmbeddings(candidateId, [
-          { purpose: 'full_text', vector: fullVec },
-          { purpose: 'skills', vector: skillsVec },
-          { purpose: 'role', vector: roleVec },
-        ])
-        await indexCandidateToQdrant({
+await deleteEmbeddings(candidateId)
+	           const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+	           await insertEmbeddingsMetadata(candidateId, embedDim, 'full_text')
+	           await insertEmbeddingsMetadata(candidateId, embedDim, 'skills')
+	           await insertEmbeddingsMetadata(candidateId, embedDim, 'role')
+	           await indexCandidateToQdrant({
           candidateId,
           name: candidateName,
           fullVector: fullVec,
@@ -1077,7 +1121,7 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
     const candidateId = req.params.id
 
     const candidate = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status'])
       .where('id', '=', candidateId)
       .executeTakeFirst()
 
@@ -1154,30 +1198,30 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
             projects: JSON.stringify(parsed.projects),
         certifications: JSON.stringify(parsed.certifications),
         languages: JSON.stringify(parsed.languages),
-        raw_text: text,
-        resume_url: candidate.source_file,
             data_quality_score: quality.quality_score,
             missing_fields: quality.missing_fields,
             industry: industryResult.industry,
             region: regionResult,
             parse_status: 'completed',
-        parse_error: null,
-        updated_at: new Date(),
-      })
-      .where('id', '=', candidateId)
-      .execute()
+            parse_error: null,
+            updated_at: new Date(),
+          })
+          .where('id', '=', candidateId)
+          .execute()
 
-    // Delete old embeddings and insert new ones (raw SQL to avoid FK issue)
-    await deleteEmbeddings(candidateId)
+        // Store raw_text in documents table instead of candidates
+        try {
+          const { insertDocument } = await import('../db/documents.js')
+          await insertDocument(candidateId, 'candidate', 'raw_text', text)
+        } catch {}
 
-    await insertEmbeddings(candidateId, [
-      { purpose: 'full_text', vector: fullVec },
-      { purpose: 'skills', vector: skillsVec },
-      { purpose: 'role', vector: roleVec },
-    ])
-
-    // Index into Qdrant for semantic search
-    await indexCandidateToQdrant({
+        // Delete old embeddings and insert new ones (raw SQL to avoid FK issue)
+        await deleteEmbeddings(candidateId)
+        const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+        await insertEmbeddingsMetadata(candidateId, embedDim, 'full_text')
+        await insertEmbeddingsMetadata(candidateId, embedDim, 'skills')
+        await insertEmbeddingsMetadata(candidateId, embedDim, 'role')
+        await indexCandidateToQdrant({
       candidateId,
       name: candidateName,
       fullVector: fullVec,
@@ -1204,7 +1248,7 @@ uploadRouter.post('/reparse/:id', async (req: Request<{id: string}>, res: Respon
 uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => {
   try {
     const badCandidates = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status'])
       .where((eb) =>
         eb.or([
           eb('name', '=', 'WORK EXPERIENCE'),
@@ -1304,7 +1348,6 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
             projects: JSON.stringify(parsed.projects),
             certifications: JSON.stringify(parsed.certifications),
             languages: JSON.stringify(parsed.languages),
-            raw_text: text,
             data_quality_score: quality.quality_score,
             missing_fields: quality.missing_fields,
             parse_status: 'completed',
@@ -1314,14 +1357,19 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
           .where('id', '=', candidate.id)
           .execute()
 
+        // Store raw_text in documents table instead of candidates
+        try {
+          const { insertDocument } = await import('../db/documents.js')
+          await insertDocument(candidate.id, 'candidate', 'raw_text', text)
+        } catch {}
+
         // Update embeddings (raw SQL to avoid FK issue)
         await deleteEmbeddings(candidate.id)
 
-        await insertEmbeddings(candidate.id, [
-          { purpose: 'full_text', vector: fullVec },
-          { purpose: 'skills', vector: skillsVec },
-          { purpose: 'role', vector: roleVec },
-        ])
+        const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+        await insertEmbeddingsMetadata(candidate.id, embedDim, 'full_text')
+        await insertEmbeddingsMetadata(candidate.id, embedDim, 'skills')
+        await insertEmbeddingsMetadata(candidate.id, embedDim, 'role')
 
         // Index into Qdrant for semantic search
         await indexCandidateToQdrant({
@@ -1357,7 +1405,7 @@ uploadRouter.post('/cleanup-stuck', async (_req: Request, res: Response) => {
   try {
     // Find candidates stuck in 'processing' for > 5 minutes
     const stuck = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'parse_status', 'updated_at'])
       .where('parse_status', '=', 'processing')
       .where('updated_at', '<', new Date(Date.now() - 5 * 60 * 1000))
       .execute()
@@ -1450,7 +1498,7 @@ uploadRouter.post('/fix-names', async (_req: Request, res: Response) => {
   try {
     const badNames = ['Unknown', 'Links', 'CONTACT', 'LINK']
     const badCandidates = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status'])
       .where((eb) =>
         eb.or([
           eb('name', '=', 'Unknown'),
@@ -1548,6 +1596,10 @@ uploadRouter.post('/fix-names', async (_req: Request, res: Response) => {
 // runs AI JD parsing + embedding + matching for each
 
 uploadRouter.post('/sync-jds-csv', async (req: Request, res: Response) => {
+  // Disabled: JDs must be uploaded or created by an authenticated user.
+  return res.status(410).json({ synced: 0, skipped: 0, failed: 0, total: 0, message: 'Cloudinary JD CSV sync is disabled. Upload or create a job from the application.' })
+
+  /*
   try {
     const folder = req.body.folder || 'jds'
     const filename = req.body.filename || 'jds_master.csv'
@@ -1648,6 +1700,7 @@ uploadRouter.post('/sync-jds-csv', async (req: Request, res: Response) => {
     console.error('[JD Sync] Error:', error)
     res.status(500).json({ error: String(error) })
   }
+  */
 })
 
 // ─── Experience Parsing Helpers ───────────────────────────────
@@ -1673,7 +1726,7 @@ function parseExperienceMax(exp: string | null): number | null {
 uploadRouter.post('/reparse-all', async (req: Request, res: Response) => {
   try {
     const candidates = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status', 'source'])
       .where('parse_status', '=', 'completed')
       .where('source_file', 'is not', null)
       .orderBy('created_at', 'asc')
@@ -1755,23 +1808,27 @@ uploadRouter.post('/reparse-all', async (req: Request, res: Response) => {
             education: JSON.stringify(parsed.education),
             projects: JSON.stringify(parsed.projects),
             certifications: JSON.stringify(parsed.certifications),
-            languages: JSON.stringify(parsed.languages),
-            raw_text: text,
-            data_quality_score: quality.quality_score,
-            missing_fields: quality.missing_fields,
-            parse_status: 'completed',
-            updated_at: new Date(),
-          })
-          .where('id', '=', candidate.id)
-          .execute()
+languages: JSON.stringify(parsed.languages),
+             data_quality_score: quality.quality_score,
+             missing_fields: quality.missing_fields,
+             parse_status: 'completed',
+             updated_at: new Date(),
+           })
+           .where('id', '=', candidate.id)
+           .execute()
 
-        // Update embeddings (raw SQL)
+         // Store raw_text in documents table
+         try {
+           const { insertDocument } = await import('../db/documents.js')
+           await insertDocument(candidate.id, 'candidate', 'raw_text', text)
+         } catch {}
+
+         // Update embeddings (raw SQL)
         await deleteEmbeddings(candidate.id)
-        await insertEmbeddings(candidate.id, [
-          { purpose: 'full_text', vector: fullVec },
-          { purpose: 'skills', vector: skillsVec },
-          { purpose: 'role', vector: roleVec },
-        ])
+const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'full_text')
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'skills')
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'role')
 
         // Index into Qdrant for semantic search
         await indexCandidateToQdrant({
@@ -1817,7 +1874,7 @@ uploadRouter.post('/reparse-all', async (req: Request, res: Response) => {
 uploadRouter.post('/reparse-fast', async (req: Request, res: Response) => {
   try {
     const candidates = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status'])
       .where('parse_status', '=', 'completed')
       .where('raw_text', 'is not', null)
       .orderBy('created_at', 'asc')
@@ -1889,11 +1946,10 @@ uploadRouter.post('/reparse-fast', async (req: Request, res: Response) => {
           const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
           await deleteEmbeddings(candidate.id)
-          await insertEmbeddings(candidate.id, [
-            { purpose: 'full_text', vector: fullVec },
-            { purpose: 'skills', vector: skillsVec },
-            { purpose: 'role', vector: roleVec },
-          ])
+const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'full_text')
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'skills')
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'role')
 
           // Index into Qdrant for semantic search
           await indexCandidateToQdrant({
@@ -1943,12 +1999,12 @@ uploadRouter.post('/reparse-groq', async (req: Request, res: Response) => {
     let candidates
     if (candidateIds && candidateIds.length > 0) {
       candidates = await db.selectFrom('candidates')
-        .selectAll()
+        .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status'])
         .where('id', 'in', candidateIds)
         .execute()
     } else {
       candidates = await db.selectFrom('candidates')
-        .selectAll()
+        .select(['id', 'name', 'source_file', 'resume_url', 'raw_text', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status'])
         .where('parse_status', '=', 'completed')
         .where('raw_text', 'is not', null)
         .orderBy('created_at', 'desc')
@@ -2019,11 +2075,10 @@ uploadRouter.post('/reparse-groq', async (req: Request, res: Response) => {
         const roleText = parsed.headline || parsed.companies[0]?.title || ''
         const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
 
-        await insertEmbeddings(candidate.id, [
-          { purpose: 'full_text', vector: fullVec },
-          { purpose: 'skills', vector: skillsVec },
-          { purpose: 'role', vector: roleVec },
-        ])
+const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'full_text')
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'skills')
+	           await insertEmbeddingsMetadata(candidate.id, embedDim, 'role')
 
         // Index into Qdrant for semantic search
         await indexCandidateToQdrant({

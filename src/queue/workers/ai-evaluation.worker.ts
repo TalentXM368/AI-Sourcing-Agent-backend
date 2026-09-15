@@ -32,7 +32,10 @@ export function registerAIEvaluationWorker() {
         return { jobId, evaluated: 0 };
       }
 
-      const jobRow = await pool.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
+      const jobRow = await pool.query(
+        'SELECT role, required_skills, nice_to_have_skills FROM jobs WHERE id = $1',
+        [jobId],
+      );
       const job = jobRow.rows[0];
 
       let evaluated = 0;
@@ -48,14 +51,14 @@ export function registerAIEvaluationWorker() {
 
         try {
           const ranked = await pool.query(
-            `SELECT * FROM ranked_candidates WHERE job_id = $1 AND candidate_id = $2`,
+            `SELECT total_score FROM ranked_candidates WHERE job_id = $1 AND candidate_id = $2`,
             [jobId, candidateId],
           );
           if (ranked.rows.length === 0) continue;
           const ranking = ranked.rows[0];
 
           const candidateRow = await pool.query(
-            `SELECT * FROM candidates WHERE id = $1`, [candidateId],
+            `SELECT name, skills, experience_years, location FROM candidates WHERE id = $1`, [candidateId],
           );
           if (candidateRow.rows.length === 0) continue;
           const candidate = candidateRow.rows[0];

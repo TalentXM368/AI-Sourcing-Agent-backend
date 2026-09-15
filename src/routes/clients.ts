@@ -38,7 +38,7 @@ const CreateClientSchema = z.object({
 clientsRouter.get('/', async (_req: Request, res: Response) => {
   try {
     const clients = await db.selectFrom('clients')
-      .selectAll()
+      .select(['id', 'organization_id', 'created_by_id', 'zoho_account_id', 'account_name', 'industry', 'location', 'status', 'urgency', 'open_roles', 'placements_ytd', 'created_at', 'updated_at'])
       .orderBy('created_at', 'desc')
       .execute()
 
@@ -52,18 +52,14 @@ clientsRouter.get('/', async (_req: Request, res: Response) => {
 
 clientsRouter.get('/:id', async (req: Request, res: Response) => {
   try {
-    const client = await db.selectFrom('clients')
-      .selectAll()
+const client = await db.selectFrom('clients')
+      .select(['id', 'organization_id', 'created_by_id', 'zoho_account_id', 'account_name', 'industry', 'location', 'status', 'urgency', 'open_roles', 'placements_ytd', 'hiring_preferences', 'culture', 'role_context', 'historical_patterns', 'created_at', 'updated_at'])
       .where('id', '=', req.params.id)
       .executeTakeFirst()
 
-    if (!client) {
-      return res.status(404).json({ error: 'Client not found' })
-    }
-
     // Get linked jobs with top candidates
     const jobs = await db.selectFrom('jobs')
-      .selectAll()
+      .select(['id', 'client_id', 'role', 'company', 'location', 'required_skills', 'nice_to_have_skills', 'avoid_skills', 'experience_min', 'experience_max', 'description', 'industry', 'region', 'status', 'created_at', 'updated_at'])
       .where('client_id', '=', req.params.id)
       .execute()
 

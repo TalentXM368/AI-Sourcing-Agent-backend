@@ -34,7 +34,16 @@ const DecisionSchema = z.object({
 
 jobsRouter.get('/', async (req: Request, res: Response) => {
   try {
-    let query = db.selectFrom('jobs').selectAll()
+    const requestedLimit = Number(req.query.limit || 50)
+    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50
+    const requestedOffset = Number(req.query.offset || 0)
+    const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0
+    let query = db.selectFrom('jobs').select([
+      'id', 'role', 'company', 'location', 'required_skills', 'nice_to_have_skills',
+      'avoid_skills', 'experience_min', 'experience_max', 'industry', 'region', 'status',
+      'created_at', 'updated_at',
+    ])
+      .where('created_by_id', '=', req.auth!.id)
 
     // Apply filters
     if (req.query.industry) {
@@ -44,22 +53,38 @@ jobsRouter.get('/', async (req: Request, res: Response) => {
       query = query.where('region', '=', req.query.region as string)
     }
 
-    const jobs = await query.orderBy('created_at', 'desc').execute()
+    const [jobs, totalResult] = await Promise.all([
+      query.orderBy('created_at', 'desc').limit(limit).offset(offset).execute(),
+      db.selectFrom('jobs')
+        .select((eb) => eb.fn.count('id').as('count'))
+        .$if(Boolean(req.query.industry), (countQuery) => countQuery.where('industry', '=', req.query.industry as string))
+        .$if(Boolean(req.query.region), (countQuery) => countQuery.where('region', '=', req.query.region as string))
+        .where('created_by_id', '=', req.auth!.id)
+        .executeTakeFirst(),
+    ])
+
+    const pageJobIds = jobs.map(job => job.id)
 
     // Batch-load candidate counts in one query (avoids N+1)
-    const counts = await db.selectFrom('ranked_candidates')
-      .select(['job_id', (eb) => eb.fn.count('id').as('count'), (eb) => eb.fn.max('total_score').as('top_score')])
-      .groupBy('job_id')
-      .execute()
+    const counts = pageJobIds.length === 0
+      ? []
+      : await db.selectFrom('ranked_candidates')
+        .select(['job_id', (eb) => eb.fn.count('id').as('count'), (eb) => eb.fn.max('total_score').as('top_score')])
+        .where('job_id', 'in', pageJobIds)
+        .groupBy('job_id')
+        .execute()
 
     const countMap = new Map<string, { count: number; topScore: number }>()
     for (const c of counts) countMap.set(c.job_id, { count: Number(c.count), topScore: Number(c.top_score) || 0 })
 
     // Batch-load AI evaluation counts
-    const aiCounts = await db.selectFrom('ai_evaluations')
-      .select(['job_id', (eb) => eb.fn.count('id').as('count')])
-      .groupBy('job_id')
-      .execute()
+    const aiCounts = pageJobIds.length === 0
+      ? []
+      : await db.selectFrom('ai_evaluations')
+        .select(['job_id', (eb) => eb.fn.count('id').as('count')])
+        .where('job_id', 'in', pageJobIds)
+        .groupBy('job_id')
+        .execute()
 
     const aiCountMap = new Map<string, number>()
     for (const a of aiCounts) aiCountMap.set(a.job_id, Number(a.count))
@@ -71,7 +96,8 @@ jobsRouter.get('/', async (req: Request, res: Response) => {
       ai_eval_count: aiCountMap.get(job.id) ?? 0,
     }))
 
-    res.json(jobsWithCount)
+    const total = Number(totalResult?.count ?? 0)
+    res.json({ jobs: jobsWithCount, total, limit, offset, hasMore: offset + jobs.length < total })
   } catch (error) {
     res.status(500).json({ error: String(error) })
   }
@@ -82,8 +108,9 @@ jobsRouter.get('/', async (req: Request, res: Response) => {
 jobsRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const job = await db.selectFrom('jobs')
-      .selectAll()
+      .select(["id", "role", "company", "location", "required_skills", "nice_to_have_skills", "avoid_skills", "experience_min", "experience_max", "description", "industry", "region", "status", "created_at", "updated_at"])
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!job) {
@@ -131,14 +158,6 @@ jobsRouter.get('/:id/ranked', async (req: Request, res: Response) => {
         'candidates.location',
         'candidates.summary',
         'candidates.experience_years',
-        'candidates.skills',
-        'candidates.companies',
-        'candidates.work_history',
-        'candidates.education',
-        'candidates.projects',
-        'candidates.certifications',
-        'candidates.languages',
-        'candidates.resume_url',
         'candidates.data_quality_score',
         'candidates.missing_fields',
         'candidates.stage',
@@ -146,7 +165,9 @@ jobsRouter.get('/:id/ranked', async (req: Request, res: Response) => {
         'candidates.region',
       ])
       .where('ranked_candidates.job_id', '=', req.params.id)
+      .where('candidates.created_by_id', '=', req.auth!.id)
       .orderBy('ranked_candidates.total_score', 'desc')
+      .limit(25)
       .execute()
 
     res.json({ ranked_candidates: ranked })
@@ -201,6 +222,8 @@ jobsRouter.post('/', async (req: Request, res: Response) => {
       experience_max: body.experience_max,
       description: body.description,
       client_id: body.client_id || null,
+      organization_id: req.auth!.organizationId,
+      created_by_id: req.auth!.id,
       status: 'open',
       created_at: now,
       updated_at: now,
@@ -241,8 +264,9 @@ jobsRouter.put('/:id', async (req: Request, res: Response) => {
     const body = CreateJobSchema.parse(req.body)
 
     const existing = await db.selectFrom('jobs')
-      .selectAll()
+      .select(["id", "role", "company", "location", "required_skills", "nice_to_have_skills", "avoid_skills", "experience_min", "experience_max", "description", "industry", "region", "status", "created_at", "updated_at"])
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!existing) {
@@ -272,6 +296,7 @@ jobsRouter.put('/:id', async (req: Request, res: Response) => {
         updated_at: now,
       })
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .returningAll()
       .executeTakeFirst()
 
@@ -307,6 +332,7 @@ jobsRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
     const deleted = await db.deleteFrom('jobs')
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!deleted || deleted.numDeletedRows === 0n) {
@@ -324,6 +350,13 @@ jobsRouter.delete('/:id', async (req: Request, res: Response) => {
 jobsRouter.post('/:id/decisions', async (req: Request, res: Response) => {
   try {
     const body = DecisionSchema.parse(req.body)
+
+    const job = await db.selectFrom('jobs')
+      .select('id')
+      .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
+      .executeTakeFirst()
+    if (!job) return res.status(404).json({ error: 'Job not found' })
 
     await db.updateTable('ranked_candidates')
       .set({ decision: body.decision })
@@ -345,8 +378,9 @@ jobsRouter.post('/:id/decisions', async (req: Request, res: Response) => {
 jobsRouter.post('/:id/score', async (req: Request, res: Response) => {
   try {
     const job = await db.selectFrom('jobs')
-      .selectAll()
+      .select(["id", "role", "company", "location", "required_skills", "nice_to_have_skills", "avoid_skills", "experience_min", "experience_max", "description", "industry", "region", "status", "created_at", "updated_at"])
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!job) {

@@ -1,5 +1,5 @@
 import type { NextFunction, Request, Response } from 'express'
-import { getAuthUser, type AuthUser, type MemberRole } from '../services/auth.js'
+import { getAuthUser, SESSION_TTL_MS, type AuthUser, type MemberRole } from '../services/auth.js'
 import { withOrganization } from '../services/request-context.js'
 
 declare global {
@@ -18,7 +18,11 @@ function readCookie(header: string | undefined, name: string): string | undefine
 
 export async function attachAuth(req: Request, _res: Response, next: NextFunction): Promise<void> {
   try {
-    req.auth = await getAuthUser(readCookie(req.headers.cookie, 'sourcing_session')) ?? undefined
+    const token = readCookie(req.headers.cookie, 'sourcing_session')
+    req.auth = await getAuthUser(token) ?? undefined
+    if (req.auth && token) {
+      _res.setHeader('Set-Cookie', sessionCookie(token))
+    }
     withOrganization(req.auth?.organizationId, next)
   } catch (error) {
     next(error)
@@ -43,7 +47,7 @@ export function requireRole(roles: MemberRole[]) {
   }
 }
 
-export function sessionCookie(token: string, maxAge = 1000 * 60 * 60 * 24 * 30): string {
+export function sessionCookie(token: string, maxAge = SESSION_TTL_MS): string {
   const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production' || process.env.VERCEL === '1'
   const secure = isProduction ? '; Secure' : ''
   const sameSite = isProduction ? 'None' : 'Lax'

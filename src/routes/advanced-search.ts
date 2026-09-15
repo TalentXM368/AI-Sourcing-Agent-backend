@@ -83,13 +83,10 @@ const CANDIDATE_COLUMNS = [
   'candidates.id', 'candidates.name', 'candidates.email', 'candidates.phone',
   'candidates.linkedin_url', 'candidates.github_url', 'candidates.portfolio_url',
   'candidates.headline', 'candidates.location', 'candidates.summary',
-  'candidates.experience_years', 'candidates.skills', 'candidates.companies',
-  'candidates.work_history', 'candidates.education', 'candidates.projects',
-  'candidates.certifications', 'candidates.languages', 'candidates.resume_url',
-  'candidates.parse_status', 'candidates.data_quality_score', 'candidates.missing_fields',
+  'candidates.experience_years', 'candidates.parse_status',
+  'candidates.data_quality_score', 'candidates.missing_fields',
   'candidates.stage', 'candidates.stage_updated_at', 'candidates.industry',
-  'candidates.region', 'candidates.source', 'candidates.pdl_id',
-  'candidates.created_at', 'candidates.updated_at',
+  'candidates.region', 'candidates.source', 'candidates.created_at',
 ] as const
 
 const LOCATION_ALIASES: Record<string, string[]> = {
@@ -410,9 +407,10 @@ advancedSearchRouter.post('/search/advanced', async (req: Request, res: Response
       try {
         console.log(`[AdvancedSearch] Semantic ranking — query: "${semanticQuery!.substring(0, 100)}", candidates: ${sqlFilteredIds.length}`)
         // Use has_id filter to restrict Qdrant to only SQL-matched candidates
+        const pageEnd = Math.min(offset + limit, 500)
         const vectorResults = await embeddingService.searchCandidates(
           semanticQuery!,
-          Math.min(sqlFilteredIds.length, 500),
+          Math.min(sqlFilteredIds.length, pageEnd),
           { must: [{ has_id: sqlFilteredIds }] as any }
         )
         useHybrid = vectorResults.length > 0
@@ -429,9 +427,10 @@ advancedSearchRouter.post('/search/advanced', async (req: Request, res: Response
           // Fetch full candidate data ordered by semantic score
           // Process in chunks to handle large ID lists
           const chunkSize = 100
+          const pageIds = rankedIds.slice(offset, offset + limit)
           const allResults: any[] = []
-          for (let i = 0; i < rankedIds.length; i += chunkSize) {
-            const chunk = rankedIds.slice(i, i + chunkSize)
+          for (let i = 0; i < pageIds.length; i += chunkSize) {
+            const chunk = pageIds.slice(i, i + chunkSize)
             const chunkResults = await db.selectFrom('candidates')
               .select(CANDIDATE_COLUMNS)
               .where('candidates.id', 'in', chunk)
@@ -445,7 +444,7 @@ advancedSearchRouter.post('/search/advanced', async (req: Request, res: Response
               }
             }
           }
-          results = allResults.slice(offset, offset + limit)
+          results = allResults
         }
       } catch (err) {
         console.warn('[AdvancedSearch] Semantic ranking failed, falling back to SQL ordering:', err)
@@ -517,87 +516,45 @@ advancedSearchRouter.get('/search/advanced/facets', async (_req: Request, res: R
         .groupBy('candidates.region').orderBy('count', 'desc').limit(30).execute(),
     ])
 
-    const [skillRows, companyRows, titleRows, schoolRows, degreeRows, langRows] = await Promise.all([
-      db.selectFrom('candidates')
-        .select(sql<string>`jsonb_array_elements(candidates.skills)->>'name'`.as('skill'))
-        .where('candidates.skills', 'is not', null).execute(),
-      db.selectFrom('candidates')
-        .select(sql<string>`jsonb_array_elements(candidates.companies)->>'name'`.as('company'))
-        .where('candidates.companies', 'is not', null).execute(),
-      db.selectFrom('candidates')
-        .select(sql<string>`jsonb_array_elements(candidates.work_history)->>'title'`.as('title'))
-        .where('candidates.work_history', 'is not', null).execute(),
-      db.selectFrom('candidates')
-        .select(sql<string>`jsonb_array_elements(candidates.education)->>'school'`.as('school'))
-        .where('candidates.education', 'is not', null).execute(),
-      db.selectFrom('candidates')
-        .select(sql<string>`jsonb_array_elements(candidates.education)->>'degree'`.as('degree'))
-        .where('candidates.education', 'is not', null).execute(),
-      db.selectFrom('candidates')
-        .select(sql<string>`jsonb_array_elements(candidates.languages)->>'name'`.as('language'))
-        .where('candidates.languages', 'is not', null).execute(),
+    type FacetRow = { value: string; count: number }
+    const [topSkills, topCompanies, topJobTitles, topSchools, topDegrees, topLanguages] = await Promise.all([
+      sql<FacetRow>`
+        SELECT LOWER(TRIM(item->>'name')) AS value, COUNT(*)::int AS count
+        FROM candidates, jsonb_array_elements(candidates.skills) AS item
+        WHERE item->>'name' IS NOT NULL AND LENGTH(TRIM(item->>'name')) > 0
+        GROUP BY LOWER(TRIM(item->>'name')) ORDER BY count DESC LIMIT 50
+      `.execute(db).then(result => result.rows),
+      sql<FacetRow>`
+        SELECT TRIM(item->>'name') AS value, COUNT(*)::int AS count
+        FROM candidates, jsonb_array_elements(candidates.companies) AS item
+        WHERE item->>'name' IS NOT NULL AND LENGTH(TRIM(item->>'name')) >= 2
+        GROUP BY TRIM(item->>'name') ORDER BY count DESC LIMIT 30
+      `.execute(db).then(result => result.rows),
+      sql<FacetRow>`
+        SELECT TRIM(item->>'title') AS value, COUNT(*)::int AS count
+        FROM candidates, jsonb_array_elements(candidates.work_history) AS item
+        WHERE item->>'title' IS NOT NULL AND LENGTH(TRIM(item->>'title')) BETWEEN 3 AND 80
+        GROUP BY TRIM(item->>'title') ORDER BY count DESC LIMIT 30
+      `.execute(db).then(result => result.rows),
+      sql<FacetRow>`
+        SELECT TRIM(item->>'school') AS value, COUNT(*)::int AS count
+        FROM candidates, jsonb_array_elements(candidates.education) AS item
+        WHERE item->>'school' IS NOT NULL AND LENGTH(TRIM(item->>'school')) >= 3
+        GROUP BY TRIM(item->>'school') ORDER BY count DESC LIMIT 30
+      `.execute(db).then(result => result.rows),
+      sql<FacetRow>`
+        SELECT TRIM(item->>'degree') AS value, COUNT(*)::int AS count
+        FROM candidates, jsonb_array_elements(candidates.education) AS item
+        WHERE item->>'degree' IS NOT NULL AND LENGTH(TRIM(item->>'degree')) >= 2
+        GROUP BY TRIM(item->>'degree') ORDER BY count DESC LIMIT 20
+      `.execute(db).then(result => result.rows),
+      sql<FacetRow>`
+        SELECT TRIM(item->>'name') AS value, COUNT(*)::int AS count
+        FROM candidates, jsonb_array_elements(candidates.languages) AS item
+        WHERE item->>'name' IS NOT NULL AND LENGTH(TRIM(item->>'name')) >= 2
+        GROUP BY TRIM(item->>'name') ORDER BY count DESC LIMIT 20
+      `.execute(db).then(result => result.rows),
     ])
-
-    const skillCounts = new Map<string, number>()
-    for (const row of skillRows) {
-      if (row.skill) {
-        const s = row.skill.toLowerCase().trim()
-        skillCounts.set(s, (skillCounts.get(s) || 0) + 1)
-      }
-    }
-    const topSkills = [...skillCounts.entries()]
-      .sort((a, b) => b[1] - a[1]).slice(0, 50)
-      .map(([value, count]) => ({ value, count }))
-
-    const companyCounts = new Map<string, number>()
-    for (const row of companyRows) {
-      if (row.company && row.company.trim().length >= 2) {
-        companyCounts.set(row.company.trim(), (companyCounts.get(row.company.trim()) || 0) + 1)
-      }
-    }
-    const topCompanies = [...companyCounts.entries()]
-      .sort((a, b) => b[1] - a[1]).slice(0, 30)
-      .map(([value, count]) => ({ value, count }))
-
-    const titleCounts = new Map<string, number>()
-    for (const row of titleRows) {
-      if (row.title && row.title.trim().length >= 3 && row.title.trim().length <= 80) {
-        titleCounts.set(row.title.trim(), (titleCounts.get(row.title.trim()) || 0) + 1)
-      }
-    }
-    const topJobTitles = [...titleCounts.entries()]
-      .sort((a, b) => b[1] - a[1]).slice(0, 30)
-      .map(([value, count]) => ({ value, count }))
-
-    const schoolCounts = new Map<string, number>()
-    for (const row of schoolRows) {
-      if (row.school && row.school.trim().length >= 3) {
-        schoolCounts.set(row.school.trim(), (schoolCounts.get(row.school.trim()) || 0) + 1)
-      }
-    }
-    const topSchools = [...schoolCounts.entries()]
-      .sort((a, b) => b[1] - a[1]).slice(0, 30)
-      .map(([value, count]) => ({ value, count }))
-
-    const degreeCounts = new Map<string, number>()
-    for (const row of degreeRows) {
-      if (row.degree && row.degree.trim().length >= 2) {
-        degreeCounts.set(row.degree.trim(), (degreeCounts.get(row.degree.trim()) || 0) + 1)
-      }
-    }
-    const topDegrees = [...degreeCounts.entries()]
-      .sort((a, b) => b[1] - a[1]).slice(0, 20)
-      .map(([value, count]) => ({ value, count }))
-
-    const langCounts = new Map<string, number>()
-    for (const row of langRows) {
-      if (row.language && row.language.trim().length >= 2) {
-        langCounts.set(row.language.trim(), (langCounts.get(row.language.trim()) || 0) + 1)
-      }
-    }
-    const topLanguages = [...langCounts.entries()]
-      .sort((a, b) => b[1] - a[1]).slice(0, 20)
-      .map(([value, count]) => ({ value, count }))
 
     const total = await db.selectFrom('candidates')
       .select(sql<number>`COUNT(*)::int`.as('count'))

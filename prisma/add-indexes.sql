@@ -17,3 +17,7 @@ CREATE INDEX IF NOT EXISTS idx_jobs_client_id ON jobs(client_id);
 -- jobs: filter columns
 CREATE INDEX IF NOT EXISTS idx_jobs_industry ON jobs(industry);
 CREATE INDEX IF NOT EXISTS idx_jobs_region ON jobs(region);
+
+-- grouped counts used by jobs and health endpoints
+CREATE INDEX IF NOT EXISTS idx_ranked_candidates_job_id_score ON ranked_candidates(job_id, total_score DESC);
+CREATE INDEX IF NOT EXISTS idx_ai_evaluations_job_id ON ai_evaluations(job_id);

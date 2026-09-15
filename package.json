@@ -1,7 +1,7 @@
 {
   "name": "ai-sourcing-agent-backend",
   "version": "1.0.0",
-  "description": "AI Sourcing Agent - Express.js Backend",
+  "description": "AI SourcingXM - Express.js Backend",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

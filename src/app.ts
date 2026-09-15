@@ -158,7 +158,7 @@ pool.query(
 
 // ─── Auto-Sync: Background Cloudinary Poller ─────────────────
 // Polls Cloudinary every 5 minutes for new resumes and auto-processes them
-const AUTO_SYNC_INTERVAL_MS = 5 * 60 * 1000 // 5 minutes
+const AUTO_SYNC_INTERVAL_MS = 30 * 60 * 1000 // 30 minutes (was 5 minutes)
 let autoSyncRunning = false
 
 async function autoSyncCloudinary() {
@@ -272,27 +272,34 @@ async function autoSyncCloudinary() {
         await pool.query(
           `UPDATE candidates SET name=$1, email=$2, phone=$3, linkedin_url=$4, github_url=$5, portfolio_url=$6,
            headline=$7, location=$8, summary=$9, experience_years=$10, skills=$11, companies=$12, work_history=$13,
-           education=$14, projects=$15, certifications=$16, languages=$17, raw_text=$18, data_quality_score=$19,
-           missing_fields=$20, industry=$21, region=$22, parse_status='completed', parse_error=NULL, updated_at=NOW()
-           WHERE id=$23`,
+           education=$14, projects=$15, certifications=$16, languages=$17,
+           data_quality_score=$18, missing_fields=$19, industry=$20, region=$21, parse_status='completed', parse_error=NULL, updated_at=NOW()
+           WHERE id=$22`,
           [candidateName, parsed.email, parsed.phone, parsed.linkedin_url, parsed.github_url, parsed.portfolio_url,
            parsed.headline, parsed.location, parsed.summary, parsed.experience_years,
            JSON.stringify(parsed.skills), JSON.stringify(parsed.companies), JSON.stringify(parsed.work_history),
            JSON.stringify(parsed.education), JSON.stringify(parsed.projects), JSON.stringify(parsed.certifications),
-           JSON.stringify(parsed.languages), text, quality.quality_score, JSON.stringify(quality.missing_fields),
+           JSON.stringify(parsed.languages), quality.quality_score, JSON.stringify(quality.missing_fields),
            industryResult.industry, regionResult, candidateId]
+        )
+        await pool.query(
+          `INSERT INTO documents (id, entity_type, entity_id, purpose, content, mime_type, created_at, updated_at)
+           VALUES ($1, 'candidate', $2, 'raw_text', $3, 'text/plain', NOW(), NOW())
+           ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET content = $3, updated_at = NOW()`,
+          [randomUUID(), candidateId, text]
         )
 
         try {
           const skillsText = skillNames.join(' ')
           const roleText = parsed.headline || parsed.companies[0]?.title || ''
           const [fullVec, skillsVec, roleVec] = await generateEmbeddings([fullText, skillsText, roleText])
+          const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
           for (const [purpose, vector] of [['full_text', fullVec], ['skills', skillsVec], ['role', roleVec]] as const) {
             await pool.query(
-              `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-               VALUES ($1, 'candidate', $2, $3, $4, 'text-embedding-3-small', NOW())
-               ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $4`,
-              [randomUUID(), candidateId, purpose, vector]
+              `INSERT INTO embeddings (id, entity_type, entity_id, purpose, model, dimensions, created_at)
+               VALUES ($1, 'candidate', $2, $3, 'text-embedding-3-small', $4, NOW())
+               ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET model = 'text-embedding-3-small', dimensions = $4`,
+              [randomUUID(), candidateId, purpose, embedDim]
             )
           }
           await indexCandidateToQdrant({

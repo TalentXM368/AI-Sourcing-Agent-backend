@@ -104,7 +104,10 @@ async function runCandidatePipelineInline(candidateId: string): Promise<void> {
       const { getEmbeddingService } = await import('../modules/vector-intelligence/factory.js');
       const svc = getEmbeddingService();
       if (svc) {
-        const row = await pool.query(`SELECT * FROM candidates WHERE id = $1`, [candidateId]);
+        const row = await pool.query(
+          `SELECT id, name, headline, location, summary, skills, raw_text FROM candidates WHERE id = $1`,
+          [candidateId],
+        );
         if (row.rows.length > 0) {
           const r = row.rows[0];
           const provider = (svc as any).provider;

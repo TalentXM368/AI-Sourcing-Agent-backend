@@ -351,6 +351,10 @@ webhooksRouter.post('/cloudinary', async (req: Request, res: Response) => {
       console.log(`[Cloudinary Webhook] Auto-sync disabled for JDs, skipping: ${public_id}`)
       return res.json({ received: true, skipped: true, reason: 'auto_sync_disabled' })
     }
+    if (isJD) {
+      console.log(`[Cloudinary Webhook] JD ingestion disabled, skipping: ${public_id}`)
+      return res.json({ received: true, skipped: true, reason: 'jd_sync_disabled' })
+    }
 
     // Return 200 immediately, process in background to avoid Vercel timeout
     res.json({ received: true })

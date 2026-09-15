@@ -78,21 +78,21 @@ export async function runFullJobPipeline(
     ],
   );
 
-  // Phase 4: Embedding
+  // Phase 4: Embedding (metadata only; vectors go to Qdrant)
   await setStage(jobId, 'embedding', 'running');
   try {
     const { generateEmbeddings } = await import('../services/openai.js');
     const embedText = [title, company, location, description, requiredSkills.join(' '), doc.plainText || ''].filter(Boolean).join(' ');
     const skillsText = [...requiredSkills, ...niceToHave].join(' ');
     const roleText = title;
-    const vectors = await generateEmbeddings([embedText, skillsText, roleText]);
-    const purposes = ['full_text', 'skills', 'role'];
-    for (let i = 0; i < vectors.length && i < purposes.length; i++) {
+    await generateEmbeddings([embedText, skillsText, roleText])
+    const embedDim = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+    for (const purpose of ['full_text', 'skills', 'role']) {
       await pool.query(
-        `INSERT INTO embeddings (id, entity_type, entity_id, purpose, vector, model, created_at)
-         VALUES (gen_random_uuid(), 'job', $1, $2, $3, $4, NOW())
-         ON CONFLICT (entity_type, entity_id, purpose) DO UPDATE SET vector = $3, model = $4`,
-        [jobId, purposes[i], vectors[i], process.env.EMBEDDING_MODEL || 'local'],
+        `INSERT INTO embeddings (id, entity_type, entity_id, purpose, model, dimensions, created_at)
+         VALUES (gen_random_uuid(), 'job', $1, $2, 'text-embedding-3-small', $3, NOW())
+         ON CONFLICT (entity_type, entity_id, purpose) DO NOTHING`,
+        [jobId, purpose, embedDim],
       );
     }
     await completeStage(jobId, 'embedding');
@@ -151,7 +151,8 @@ export async function runFullJobPipeline(
     const { evaluateCandidateWithLLM } = await import('../scoring/llm-evaluation.js');
 
     const rankedRow = await pool.query(
-      `SELECT rc.*, c.name, c.headline, c.location, c.skills, c.experience_years, c.summary,
+      `SELECT rc.id, rc.candidate_id, rc.total_score, rc.semantic_score, rc.skill_score, rc.experience_score, rc.education_score, rc.explanation, rc.llm_score,
+              c.name, c.headline, c.location, c.skills, c.experience_years, c.summary,
               c.companies, c.work_history, c.education, c.email, c.phone
        FROM ranked_candidates rc
        JOIN candidates c ON c.id = rc.candidate_id
@@ -161,7 +162,12 @@ export async function runFullJobPipeline(
       [jobId],
     );
 
-    const jobRow = await pool.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
+    const jobRow = await pool.query(
+      `SELECT id, role, company, location, description, required_skills, nice_to_have_skills,
+              avoid_skills, experience_min, experience_max, industry, region
+       FROM jobs WHERE id = $1`,
+      [jobId],
+    );
     const job = jobRow.rows[0];
 
     let evaluated = 0;

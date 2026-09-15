@@ -65,6 +65,7 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
     const candidate = await db.selectFrom('candidates')
       .select(['resume_url', 'source_file', 'name'])
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!candidate) {
@@ -80,14 +81,12 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
     const urlParts = fileUrl.split('/upload/')
     if (urlParts.length < 2) {
       // Not a Cloudinary URL — check if we have raw_text to serve
-      const fullCandidate = await db.selectFrom('candidates')
-        .select(['raw_text', 'name'])
-        .where('id', '=', req.params.id)
-        .executeTakeFirst()
-      if (fullCandidate?.raw_text) {
+      const { getDocument } = await import('../db/documents.js')
+      const rawText = await getDocument(req.params.id as string, 'candidate', 'raw_text')
+      if (rawText) {
         res.setHeader('Content-Type', 'text/plain; charset=utf-8')
-        res.setHeader('Content-Disposition', `inline; filename="${(fullCandidate.name || 'resume').replace(/[^a-zA-Z0-9]/g, '_')}.txt"`)
-        return res.send(fullCandidate.raw_text)
+        res.setHeader('Content-Disposition', `inline; filename="${(candidate.name || 'resume').replace(/[^a-zA-Z0-9]/g, '_')}.txt"`)
+        return res.send(rawText)
       }
       return res.status(404).json({ error: 'Resume file not available' })
     }
@@ -305,8 +304,19 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
 candidatesRouter.get('/', async (req: Request, res: Response) => {
   try {
     let query = db.selectFrom('candidates')
-      .selectAll()
+      .select([
+        'id', 'name', 'email', 'phone', 'linkedin_url', 'github_url', 'portfolio_url',
+        'headline', 'location', 'summary', 'experience_years',
+        'parse_status', 'data_quality_score', 'missing_fields', 'stage',
+        'stage_updated_at', 'industry', 'region', 'source', 'created_at', 'updated_at',
+      ])
       .where('parse_status', '=', 'completed')
+      .where('created_by_id', '=', req.auth!.id)
+
+    const requestedLimit = Number(req.query.limit || 50)
+    const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 100) : 50
+    const requestedOffset = Number(req.query.offset || 0)
+    const offset = Number.isFinite(requestedOffset) ? Math.max(requestedOffset, 0) : 0
 
     // Apply filters
     if (req.query.source) {
@@ -319,9 +329,40 @@ candidatesRouter.get('/', async (req: Request, res: Response) => {
       query = query.where('region', '=', req.query.region as string)
     }
 
-    const candidates = await query.orderBy('created_at', 'desc').execute()
+    const [candidates, countResult] = await Promise.all([
+      query.orderBy('created_at', 'desc').limit(limit).offset(offset).execute(),
+      db.selectFrom('candidates')
+        .select((eb) => eb.fn.count('id').as('count'))
+        .where('parse_status', '=', 'completed')
+        .where('created_by_id', '=', req.auth!.id)
+        .$if(Boolean(req.query.source), (countQuery) => countQuery.where('source', '=', req.query.source as string))
+        .$if(Boolean(req.query.industry), (countQuery) => countQuery.where('industry', '=', req.query.industry as string))
+        .$if(Boolean(req.query.region), (countQuery) => countQuery.where('region', '=', req.query.region as string))
+        .executeTakeFirst(),
+    ])
+    const total = Number(countResult?.count ?? 0)
 
-    res.json(candidates)
+    res.json({ candidates, total, limit, offset, hasMore: offset + candidates.length < total })
+  } catch (error) {
+    res.status(500).json({ error: String(error) })
+  }
+})
+
+// ─── Get parsing status without transferring the full profile ───
+
+candidatesRouter.get('/:id/status', async (req: Request, res: Response) => {
+  try {
+    const candidate = await db.selectFrom('candidates')
+      .select(['id', 'name', 'parse_status'])
+      .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
+      .executeTakeFirst()
+
+    if (!candidate) {
+      return res.status(404).json({ error: 'Candidate not found' })
+    }
+
+    res.json(candidate)
   } catch (error) {
     res.status(500).json({ error: String(error) })
   }
@@ -333,8 +374,16 @@ candidatesRouter.get('/', async (req: Request, res: Response) => {
 candidatesRouter.get('/pdl/:pdlId', async (req: Request, res: Response) => {
   try {
     const candidate = await db.selectFrom('candidates')
-      .selectAll()
+      .select([
+        'id', 'name', 'email', 'phone', 'linkedin_url', 'github_url', 'portfolio_url',
+        'headline', 'location', 'summary', 'experience_years',
+        'skills', 'companies', 'work_history', 'education', 'projects',
+        'certifications', 'languages', 'resume_url', 'source_file',
+        'parse_status', 'data_quality_score', 'missing_fields', 'stage',
+        'stage_updated_at', 'industry', 'region',
+      ])
       .where('pdl_id', '=', req.params.pdlId)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!candidate) {
@@ -352,8 +401,17 @@ candidatesRouter.get('/pdl/:pdlId', async (req: Request, res: Response) => {
 candidatesRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const candidate = await db.selectFrom('candidates')
-      .selectAll()
+      .select([
+        'id', 'name', 'email', 'phone', 'linkedin_url', 'github_url', 'portfolio_url',
+        'headline', 'location', 'summary', 'experience_years',
+        'skills', 'companies', 'work_history', 'education', 'projects',
+        'certifications', 'languages', 'resume_url', 'source_file',
+        'parse_status', 'data_quality_score', 'missing_fields', 'stage',
+        'stage_updated_at', 'industry', 'region', 'source', 'pdl_id',
+        'created_at', 'updated_at',
+      ])
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!candidate) {
@@ -381,6 +439,7 @@ candidatesRouter.patch('/:id/stage', async (req: Request, res: Response) => {
     const candidate = await db.selectFrom('candidates')
       .select(['id', 'stage'])
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!candidate) {
@@ -410,6 +469,7 @@ candidatesRouter.delete('/:id', async (req: Request, res: Response) => {
     const candidate = await db.selectFrom('candidates')
       .select(['id', 'name'])
       .where('id', '=', candidateId)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!candidate) {
@@ -421,7 +481,10 @@ candidatesRouter.delete('/:id', async (req: Request, res: Response) => {
     await pool.query(`DELETE FROM processing_status WHERE entity_id = $1`, [candidateId])
     await pool.query(`DELETE FROM ranked_candidates WHERE candidate_id = $1`, [candidateId])
     await pool.query(`DELETE FROM ai_evaluations WHERE candidate_id = $1`, [candidateId])
-    await db.deleteFrom('candidates').where('id', '=', candidateId).execute()
+    await db.deleteFrom('candidates')
+      .where('id', '=', candidateId)
+      .where('created_by_id', '=', req.auth!.id)
+      .execute()
 
     console.log(`[Delete] Removed candidate: ${candidate.name} (${candidateId})`)
     res.json({ success: true, name: candidate.name })
@@ -440,7 +503,7 @@ candidatesRouter.post('/batch-reprocess', async (req: Request, res: Response) =>
 
     // Find candidates with empty critical fields
     const candidates = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'skills', 'work_history', 'education', 'companies', 'parse_status'])
       .where('source', '=', 'resume')
       .where('parse_status', '=', 'completed')
       .where((eb) =>
@@ -527,8 +590,9 @@ async function batchReprocess(candidates: any[], batchId: string) {
 candidatesRouter.post('/:id/reprocess', async (req: Request, res: Response) => {
   try {
     const candidate = await db.selectFrom('candidates')
-      .selectAll()
+      .select(['id', 'name', 'source_file', 'resume_url', 'skills', 'work_history', 'education', 'companies', 'headline', 'location', 'summary', 'experience_years', 'parse_status'])
       .where('id', '=', req.params.id)
+      .where('created_by_id', '=', req.auth!.id)
       .executeTakeFirst()
 
     if (!candidate) {
@@ -546,6 +610,7 @@ candidatesRouter.post('/:id/reprocess', async (req: Request, res: Response) => {
     await db.updateTable('candidates')
       .set({ parse_status: 'processing', parse_error: null, updated_at: new Date() })
       .where('id', '=', candidate.id)
+        .where('created_by_id', '=', req.auth!.id)
       .execute()
 
     // Run reprocess asynchronously (don't block the response)
