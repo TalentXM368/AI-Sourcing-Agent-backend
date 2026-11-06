@@ -32,15 +32,18 @@ export function createEmbeddingProvider(config: EmbeddingProviderConfig): Embedd
 }
 
 export function getDefaultEmbeddingProvider(): EmbeddingProvider {
-  const name = process.env.EMBEDDING_PROVIDER || 'openai';
+  const configuredName = process.env.EMBEDDING_PROVIDER;
+  const fallbackName = process.env.OPENAI_API_KEY ? 'openai' : 'local';
+  const name = configuredName || fallbackName;
   const existing = providers.get(name);
   if (existing) return existing;
 
+  const resolvedName = name === 'local' ? 'local' : 'openai';
   const provider = createEmbeddingProvider({
-    name: name as EmbeddingProviderConfig['name'],
-    model: process.env.EMBEDDING_MODEL || (name === 'local' ? 'Xenova/all-MiniLM-L6-v2' : 'text-embedding-3-small'),
-    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || (name === 'local' ? '384' : '1536'), 10),
-    apiKey: process.env.OPENAI_API_KEY,
+    name: resolvedName as EmbeddingProviderConfig['name'],
+    model: process.env.EMBEDDING_MODEL || (resolvedName === 'local' ? 'Xenova/all-MiniLM-L6-v2' : 'text-embedding-3-small'),
+    dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS || (resolvedName === 'local' ? '384' : '1536'), 10),
+    apiKey: resolvedName === 'local' ? '' : process.env.OPENAI_API_KEY || '',
   });
   registerProvider(name, provider);
   return provider;

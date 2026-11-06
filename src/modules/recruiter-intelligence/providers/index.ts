@@ -11,8 +11,25 @@ export { ClaudeProvider } from './claude-provider.js';
 export { GeminiProvider } from './gemini-provider.js';
 export { GroqProvider } from './groq-provider.js';
 
+function getProviderConfig(name: string) {
+  const baseConfig = PROVIDER_CONFIG[name];
+  if (!baseConfig) return null;
+
+  const envKeyMap: Record<string, string | undefined> = {
+    openai: process.env.OPENAI_API_KEY,
+    claude: process.env.ANTHROPIC_API_KEY,
+    gemini: process.env.GEMINI_API_KEY,
+    groq: process.env.GROQ_API_KEY,
+  };
+
+  return {
+    ...baseConfig,
+    apiKey: envKeyMap[name] || baseConfig.apiKey || '',
+  };
+}
+
 export function createLLMProvider(name: string): LLMProvider | null {
-  const config = PROVIDER_CONFIG[name];
+  const config = getProviderConfig(name);
   if (!config || !config.apiKey) return null;
 
   switch (name) {

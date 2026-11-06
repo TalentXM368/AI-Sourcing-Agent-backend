@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { db } from '../db/index.js'
 import { attachAuth, clearedSessionCookie, requireAuth, sessionCookie } from '../middleware/auth.js'
 import { createPasswordResetToken, createSession, hashPassword, resetPassword, revokeSession, verifyPassword } from '../services/auth.js'
-import { randomUUID } from 'crypto'
+import { randomUUID, timingSafeEqual } from 'crypto'
 
 export const authRouter = Router()
 authRouter.use(attachAuth)
@@ -26,12 +26,97 @@ function publicUser(user: NonNullable<Request['auth']>) {
     id: user.id, first_name: user.firstName, last_name: user.lastName, email: user.email,
     organization_id: user.organizationId, organization_name: user.organizationName,
     role: user.role, onboarding_complete: user.onboardingComplete,
+    is_platform_admin: user.email.toLowerCase() === (process.env.ADMIN_EMAIL || 'admin@blocktxm.com').trim().toLowerCase()
+      && user.role === 'ADMIN',
   }
+}
+
+function adminEmail(): string {
+  return (process.env.ADMIN_EMAIL || 'admin@blocktxm.com').trim().toLowerCase()
+}
+
+function matchesBootstrapPassword(candidate: string, configured: string): boolean {
+  const candidateBytes = Buffer.from(candidate)
+  const configuredBytes = Buffer.from(configured)
+  return candidateBytes.length === configuredBytes.length
+    && timingSafeEqual(candidateBytes, configuredBytes)
+}
+
+async function provisionBootstrapAdmin(email: string, password: string): Promise<void> {
+  const existing = await db.selectFrom('users').select('id').where('email', '=', email).executeTakeFirst()
+  const passwordHash = await hashPassword(password)
+  await db.transaction().execute(async trx => {
+    if (existing) {
+      await trx.updateTable('users').set({
+        password_hash: passwordHash,
+        status: 'ACTIVE',
+        updated_at: new Date(),
+      }).where('id', '=', existing.id).execute()
+      const memberships = await trx.selectFrom('organization_members')
+        .select('id')
+        .where('user_id', '=', existing.id)
+        .execute()
+      if (memberships.length) {
+        await trx.updateTable('organization_members').set({
+          role: 'ADMIN',
+          status: 'ACTIVE',
+          updated_at: new Date(),
+        }).where('user_id', '=', existing.id).execute()
+        return
+      }
+    }
+
+    const userId = existing?.id || randomUUID()
+    const organizationId = randomUUID()
+    if (!existing) {
+      const racedUser = await trx.selectFrom('users').select('id').where('email', '=', email).executeTakeFirst()
+      if (racedUser) return
+    }
+    if (!existing) {
+      await trx.insertInto('users').values({
+        id: userId,
+        first_name: 'BlockTXM',
+        last_name: 'Admin',
+        email,
+        password_hash: passwordHash,
+        onboarding_role: null,
+        status: 'ACTIVE',
+        created_at: new Date(),
+        updated_at: new Date(),
+        last_login_at: null,
+      }).execute()
+    }
+    await trx.insertInto('organizations').values({
+      id: organizationId,
+      name: 'BlockTXM Platform',
+      website: null,
+      industry: null,
+      company_size: null,
+      country: null,
+      logo_url: null,
+      onboarding_completed: true,
+      created_at: new Date(),
+      updated_at: new Date(),
+    }).execute()
+    await trx.insertInto('organization_members').values({
+      id: randomUUID(),
+      organization_id: organizationId,
+      user_id: userId,
+      role: 'ADMIN',
+      status: 'ACTIVE',
+      joined_at: new Date(),
+      created_at: new Date(),
+      updated_at: new Date(),
+    }).execute()
+  })
 }
 
 authRouter.post('/signup', async (req: Request, res: Response) => {
   try {
     const body = signupSchema.parse(req.body)
+    if (body.email === adminEmail()) {
+      return res.status(403).json({ error: 'This email is reserved for the platform administrator' })
+    }
     const existing = await db.selectFrom('users').select('id').where('email', '=', body.email).executeTakeFirst()
     if (existing) return res.status(409).json({ error: 'An account with this email already exists' })
 
@@ -68,7 +153,23 @@ authRouter.post('/signup', async (req: Request, res: Response) => {
 authRouter.post('/login', async (req: Request, res: Response) => {
   try {
     const body = z.object({ email: emailSchema, password: z.string().min(1).max(128) }).parse(req.body)
-    const user = await db.selectFrom('users').select(['id', 'first_name', 'last_name', 'email', 'password_hash', 'onboarding_role', 'status', 'created_at', 'updated_at', 'last_login_at']).where('email', '=', body.email).executeTakeFirst()
+    let user = await db.selectFrom('users').select(['id', 'first_name', 'last_name', 'email', 'password_hash', 'onboarding_role', 'status', 'created_at', 'updated_at', 'last_login_at']).where('email', '=', body.email).executeTakeFirst()
+    if (!user && body.email === adminEmail()) {
+      const bootstrapPassword = process.env.ADMIN_PASSWORD
+      if (!bootstrapPassword || bootstrapPassword.length < 12) {
+        return res.status(503).json({ error: 'Admin login is not configured on the server' })
+      }
+    }
+    const bootstrapPassword = process.env.ADMIN_PASSWORD
+    if (
+      body.email === adminEmail()
+      && bootstrapPassword
+      && bootstrapPassword.length >= 12
+      && matchesBootstrapPassword(body.password, bootstrapPassword)
+    ) {
+      await provisionBootstrapAdmin(body.email, bootstrapPassword)
+      user = await db.selectFrom('users').select(['id', 'first_name', 'last_name', 'email', 'password_hash', 'onboarding_role', 'status', 'created_at', 'updated_at', 'last_login_at']).where('email', '=', body.email).executeTakeFirst()
+    }
     if (!user || user.status !== 'ACTIVE' || !(await verifyPassword(body.password, user.password_hash))) {
       return res.status(401).json({ error: 'Invalid email or password.' })
     }

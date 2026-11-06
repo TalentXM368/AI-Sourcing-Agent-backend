@@ -2,6 +2,7 @@ import { config } from 'dotenv'
 import { resolve } from 'path'
 import { checkDatabaseConnection, pool } from './db/index.js'
 import app from './app.js'
+import { startGmailResumeIngestionScheduler } from './services/gmail-resume-ingestion.js'
 
 config({ path: resolve(__dirname, '../.env') })
 
@@ -34,6 +35,7 @@ async function start() {
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`)
     console.log('Database: checking connection in the background')
+    startGmailResumeIngestionScheduler()
   })
 
   const dbConnected = await checkDatabaseConnection()

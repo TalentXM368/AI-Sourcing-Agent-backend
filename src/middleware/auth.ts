@@ -47,6 +47,23 @@ export function requireRole(roles: MemberRole[]) {
   }
 }
 
+export function isPlatformAdmin(user: AuthUser | undefined): boolean {
+  const adminEmail = (process.env.ADMIN_EMAIL || 'admin@blocktxm.com').trim().toLowerCase()
+  return Boolean(
+    user
+    && user.email.toLowerCase() === adminEmail
+    && user.role === 'ADMIN'
+  )
+}
+
+export function requirePlatformAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (!req.auth || !isPlatformAdmin(req.auth)) {
+    res.status(403).json({ error: 'Platform administrator access required' })
+    return
+  }
+  next()
+}
+
 export function sessionCookie(token: string, maxAge = SESSION_TTL_MS): string {
   const isProduction = process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production' || process.env.VERCEL === '1'
   const secure = isProduction ? '; Secure' : ''

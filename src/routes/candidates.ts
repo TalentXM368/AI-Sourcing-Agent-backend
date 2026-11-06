@@ -1,7 +1,5 @@
 import { Router, Request, Response } from 'express'
 import { db, pool } from '../db/index.js'
-import { v2 as cloudinary } from 'cloudinary'
-import AdmZip from 'adm-zip'
 import mammoth from 'mammoth'
 import puppeteer from 'puppeteer-core'
 import fs from 'fs'
@@ -10,6 +8,7 @@ import path from 'path'
 import { spawnSync } from 'child_process'
 import { tmpdir } from 'os'
 import { writeFileSync, unlinkSync, mkdtempSync, readFileSync, rmSync } from 'fs'
+import { fetchFromCloudinary } from '../services/cloudinary.js'
 
 export const candidatesRouter = Router()
 
@@ -95,36 +94,9 @@ candidatesRouter.get('/:id/resume', async (req: Request, res: Response) => {
     publicId = publicId.replace(/^v\d+\//, '')
     publicId = publicId.split('?')[0]
 
-    // Use Cloudinary archive download (the only reliable auth method for raw files)
-    const archiveUrl = cloudinary.utils.download_archive_url({
-      resource_type: 'raw',
-      type: 'upload',
-      public_ids: [publicId],
-      expires_at: Math.floor(Date.now() / 1000) + 3600,
-    })
-
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 30_000)
-    const response = await fetch(archiveUrl, { method: 'POST', signal: controller.signal })
-    clearTimeout(timeout)
-    if (!response.ok) {
-      console.error(`[Candidates] Cloudinary archive fetch failed: ${response.status}`)
-      return res.status(502).json({ error: 'Failed to fetch resume from storage' })
-    }
-
-    const arrayBuffer = await response.arrayBuffer()
-    const zipBuffer = Buffer.from(arrayBuffer)
-
-    // Extract the file from the zip
-    const zip = new AdmZip(zipBuffer)
-    const entries = zip.getEntries()
-    if (entries.length === 0) {
-      return res.status(404).json({ error: 'Resume file not found in archive' })
-    }
-
-    const fileBuffer = entries[0].getData()
-    const entryName = entries[0].entryName || publicId.split('/').pop() || ''
-    const ext = entryName.split('.').pop()?.toLowerCase() || publicId.split('.').pop()?.toLowerCase() || 'pdf'
+    const fileBuffer = await fetchFromCloudinary(fileUrl, publicId)
+    const entryName = publicId.split('/').pop() || ''
+    const ext = publicId.split('.').pop()?.toLowerCase() || 'pdf'
 
     // If the file is a DOCX, convert to HTML so browsers can render it inline.
     if (ext === 'docx') {
@@ -383,7 +355,10 @@ candidatesRouter.get('/pdl/:pdlId', async (req: Request, res: Response) => {
         'stage_updated_at', 'industry', 'region',
       ])
       .where('pdl_id', '=', req.params.pdlId)
-      .where('created_by_id', '=', req.auth!.id)
+      .where((eb) => eb.or([
+        eb('created_by_id', '=', req.auth!.id),
+        eb('created_by_id', 'is', null),
+      ]))
       .executeTakeFirst()
 
     if (!candidate) {
@@ -411,7 +386,10 @@ candidatesRouter.get('/:id', async (req: Request, res: Response) => {
         'created_at', 'updated_at',
       ])
       .where('id', '=', req.params.id)
-      .where('created_by_id', '=', req.auth!.id)
+      .where((eb) => eb.or([
+        eb('created_by_id', '=', req.auth!.id),
+        eb('created_by_id', 'is', null),
+      ]))
       .executeTakeFirst()
 
     if (!candidate) {
@@ -642,7 +620,7 @@ candidatesRouter.post('/reset-stuck', async (_req: Request, res: Response) => {
 
 // ─── Reprocess implementation ────────────────────────────────
 
-async function reprocessCandidate(candidateId: string, fileUrl: string) {
+export async function reprocessCandidate(candidateId: string, fileUrl: string) {
   const { extractTextFromBuffer, detectMimetype } = await import('../parsers/text-extractor.js')
   const { extractWithDocumentIntelligence } = await import('../services/document-intelligence.js')
   const { runFullCandidatePipeline } = await import('../services/candidate-pipeline.js')
@@ -652,27 +630,7 @@ async function reprocessCandidate(candidateId: string, fileUrl: string) {
   let publicId = urlParts.length >= 2 ? urlParts[1] : fileUrl
   publicId = publicId.replace(/^v\d+\//, '').split('?')[0]
 
-  // Fetch from Cloudinary
-  const archiveUrl = cloudinary.utils.download_archive_url({
-    resource_type: 'raw',
-    type: 'upload',
-    public_ids: [publicId],
-    expires_at: Math.floor(Date.now() / 1000) + 3600,
-  })
-
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 30_000)
-  const response = await fetch(archiveUrl, { method: 'POST', signal: controller.signal })
-  clearTimeout(timeout)
-  if (!response.ok) throw new Error(`Cloudinary fetch failed: ${response.status}`)
-
-  const arrayBuffer = await response.arrayBuffer()
-  const zipBuffer = Buffer.from(arrayBuffer)
-  const zip = new AdmZip(zipBuffer)
-  const entries = zip.getEntries()
-  if (entries.length === 0) throw new Error('No file in archive')
-
-  const fileBuffer = entries[0].getData()
+  const fileBuffer = await fetchFromCloudinary(fileUrl, publicId)
   const ext = publicId.split('.').pop()?.toLowerCase() || 'pdf'
   const mimetype = detectMimetype(`file.${ext}`)
 

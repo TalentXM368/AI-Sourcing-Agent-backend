@@ -118,52 +118,81 @@ export function getSignedUrl(publicId: string): string {
   })
 }
 
-// ─── Fetch File from Cloudinary (via archive download) ────────
+// ─── Fetch File from Cloudinary ───────────────────────────────
 
-export async function fetchFromCloudinary(url: string, publicId?: string): Promise<Buffer> {
-  const FETCH_TIMEOUT_MS = 60_000
+async function downloadBuffer(url: string, timeoutMs: number): Promise<Buffer> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   try {
-    if (publicId) {
-      const archiveUrl = cloudinary.utils.download_archive_url({
-        resource_type: 'raw',
-        type: 'upload',
-        public_ids: [publicId],
-        expires_at: Math.floor(Date.now() / 1000) + 3600,
-      })
-
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
-      const response = await fetch(archiveUrl, { signal: controller.signal })
-      clearTimeout(timeout)
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
-      }
-      const arrayBuffer = await response.arrayBuffer()
-      const zipBuffer = Buffer.from(arrayBuffer)
-
-      const zip = new AdmZip(zipBuffer)
-      const entries = zip.getEntries()
-      if (entries.length === 0) {
-        throw new Error('Empty archive')
-      }
-
-      return entries[0].getData()
-    }
-
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS)
     const response = await fetch(url, { signal: controller.signal })
-    clearTimeout(timeout)
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`)
     }
-    const arrayBuffer = await response.arrayBuffer()
-    return Buffer.from(arrayBuffer)
-  } catch (error: any) {
-    if (error.name === 'AbortError') throw new Error('Cloudinary fetch timed out')
-    console.error('[Cloudinary] Fetch failed:', error)
+
+    const buffer = Buffer.from(await response.arrayBuffer())
+    if (buffer.length === 0) {
+      throw new Error('Cloudinary returned an empty file')
+    }
+    return buffer
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error('Cloudinary fetch timed out')
+    }
     throw error
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function downloadFromArchive(publicId: string): Promise<Buffer> {
+  const archiveUrl = cloudinary.utils.download_archive_url({
+    resource_type: 'raw',
+    type: 'upload',
+    public_ids: [publicId],
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  })
+  const zipBuffer = await downloadBuffer(archiveUrl, 60_000)
+  const entries = new AdmZip(zipBuffer).getEntries().filter(entry => !entry.isDirectory)
+  const expectedName = publicId.split('/').pop()?.toLowerCase()
+  const matchingEntry = expectedName
+    ? entries.find(entry => {
+      const entryName = entry.entryName.replace(/\\/g, '/').split('/').pop()?.toLowerCase()
+      return entryName === expectedName || entryName?.startsWith(`${expectedName}.`)
+    })
+    : undefined
+  const selectedEntry = matchingEntry || (entries.length === 1 ? entries[0] : undefined)
+
+  if (!selectedEntry) {
+    throw new Error(entries.length === 0 ? 'Cloudinary archive contains no files' : 'Cloudinary archive does not contain the requested file')
+  }
+
+  const buffer = selectedEntry.getData()
+  if (buffer.length === 0) {
+    throw new Error('Cloudinary archive contains an empty file')
+  }
+  return buffer
+}
+
+export async function fetchFromCloudinary(url: string, publicId?: string): Promise<Buffer> {
+  try {
+    return await downloadBuffer(url, 30_000)
+  } catch (directError) {
+    if (!publicId) {
+      console.error('[Cloudinary] Direct file download failed:', directError)
+      throw directError
+    }
+
+    console.warn('[Cloudinary] Direct file download failed; retrying with a single-file archive')
+    try {
+      return await downloadFromArchive(publicId)
+    } catch (archiveError) {
+      const directMessage = directError instanceof Error ? directError.message : String(directError)
+      const archiveMessage = archiveError instanceof Error ? archiveError.message : String(archiveError)
+      const error = new Error(`Cloudinary direct download failed (${directMessage}); archive fallback failed (${archiveMessage})`)
+      console.error('[Cloudinary] Both download methods failed:', error)
+      throw error
+    }
   }
 }
 
@@ -190,6 +219,34 @@ export async function uploadToCloudinary(
       }
     )
 
+    uploadStream.end(buffer)
+  })
+}
+
+export async function uploadRawResumeToCloudinary(
+  buffer: Buffer,
+  folder: string,
+  publicId: string,
+): Promise<{ publicId: string; secureUrl: string }> {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        folder,
+        public_id: publicId,
+        resource_type: 'raw',
+        type: 'upload',
+        overwrite: true,
+      },
+      (error, result) => {
+        if (error) {
+          reject(error)
+        } else if (!result?.public_id || !result.secure_url) {
+          reject(new Error('Cloudinary upload response omitted the public ID or secure URL'))
+        } else {
+          resolve({ publicId: result.public_id, secureUrl: result.secure_url })
+        }
+      },
+    )
     uploadStream.end(buffer)
   })
 }

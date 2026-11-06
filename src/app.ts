@@ -8,6 +8,7 @@ import { clientsRouter } from './routes/clients.js'
 import { healthRouter } from './routes/health.js'
 import { uploadRouter } from './routes/upload.js'
 import { settingsRouter } from './routes/settings.js'
+import { outreachRouter } from './routes/outreach.js'
 import { pdlSearchRouter } from './routes/pdl-search.js'
 import { githubSearchRouter } from './routes/github-search.js'
 import { stackoverflowSearchRouter } from './routes/stackoverflow-search.js'
@@ -29,11 +30,13 @@ import { getVectorIntelligenceRouter, initializeVectorIntelligence, getEmbedding
 import { getMatchingRouter } from './modules/matching-intelligence/factory.js'
 import { getRecruiterRouter } from './modules/recruiter-intelligence/factory.js'
 import { getBenchmarkRouter } from './modules/benchmark/factory.js'
+import { gmailIngestionCronRouter } from './routes/gmail-ingestion-cron.js'
 import { createProcessingRouter } from './routes/processing.js'
 import { createAIEvaluationRouter } from './routes/ai-evaluation.js'
 import { loadMatchingModeFromDB } from './services/pipeline-toggle.js'
 import { authRouter } from './routes/auth.js'
 import { accountRouter } from './routes/account.js'
+import { adminRouter } from './routes/admin.js'
 import { attachAuth, requireAuth } from './middleware/auth.js'
 
 const app = express()
@@ -65,9 +68,11 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
 app.use('/api/health', healthRouter)
 app.use('/api/auth', authRouter)
+app.use('/api/cron/gmail-ingestion', gmailIngestionCronRouter)
 app.use(attachAuth)
 app.use('/api', requireAuth)
 app.use('/api', accountRouter)
+app.use('/api/admin', adminRouter)
 app.use('/api/webhooks', webhooksRouter)
 app.use('/api/jobs', jobsRouter)
 app.use('/api/candidates', pdlSearchRouter)
@@ -83,6 +88,7 @@ app.use('/api/candidates', candidatesRouter)
 app.use('/api/clients', clientsRouter)
 app.use('/api/upload', uploadRouter)
 app.use('/api/settings', settingsRouter)
+app.use('/api/outreach', outreachRouter)
 app.use('/api', advancedSearchRouter)
 app.use('/api/candidates', resumeSearchRouter)
 app.use('/api/pipeline', pipelineRouter)
@@ -146,6 +152,14 @@ import('./queue/workers/index.js').then(({ startAllWorkers }) => {
   console.warn('[App] Worker startup failed (Redis may not be available):', err.message)
 })
 
+import('./services/resume-recovery.js').then(({ resumeActiveRecoveryBatches }) => {
+  resumeActiveRecoveryBatches().catch(err => {
+    console.error('[ResumeRecovery] Failed to resume active batches:', err)
+  })
+}).catch(err => {
+  console.error('[ResumeRecovery] Recovery service startup failed:', err)
+})
+
 // ─── Startup Cleanup: Reset stuck processing candidates ──────
 import { pool } from './db/index.js'
 pool.query(
@@ -168,7 +182,7 @@ async function autoSyncCloudinary() {
     const { listCloudinaryFolder } = await import('./services/cloudinary.js')
     const { fetchFromCloudinary } = await import('./services/cloudinary.js')
     const { extractTextFromBuffer, detectMimetype } = await import('./parsers/text-extractor.js')
-    const { parseResumeRegex } = await import('./parsers/resume-parser.js')
+    const { parseResume } = await import('./parsers/resume-parser.js')
     const { generateEmbeddings } = await import('./services/openai.js')
     const { indexCandidateToQdrant } = await import('./utils/qdrant-indexing.js')
     const { computeDataQuality } = await import('./scoring/data-quality.js')
@@ -241,21 +255,16 @@ async function autoSyncCloudinary() {
 
         if (!text || text.length < 30) {
           const nameFromFile = extractNameFromFilename(file.public_id)
-          if (nameFromFile) {
-            await pool.query(
-              `UPDATE candidates SET name = $1, parse_status = 'completed', parse_error = 'No extractable text', updated_at = NOW() WHERE id = $2`,
-              [nameFromFile, candidateId]
-            )
-          } else {
-            await pool.query(
-              `UPDATE candidates SET parse_status = 'failed', parse_error = 'No extractable text', updated_at = NOW() WHERE id = $2`,
-              [candidateId]
-            )
-          }
+          await pool.query(
+            `UPDATE candidates SET name = COALESCE($1, name), parse_status = 'failed',
+             parse_error = 'No extractable resume text; OCR may be required for scanned documents',
+             updated_at = NOW() WHERE id = $2`,
+            [nameFromFile || null, candidateId]
+          )
           continue
         }
 
-        const parsed = parseResumeRegex(text)
+        const parsed = await parseResume(text)
         let candidateName = parsed.name
         if (!isValidPersonName(candidateName)) {
           const fromFile = extractNameFromFilename(file.public_id)
@@ -279,7 +288,7 @@ async function autoSyncCloudinary() {
            parsed.headline, parsed.location, parsed.summary, parsed.experience_years,
            JSON.stringify(parsed.skills), JSON.stringify(parsed.companies), JSON.stringify(parsed.work_history),
            JSON.stringify(parsed.education), JSON.stringify(parsed.projects), JSON.stringify(parsed.certifications),
-           JSON.stringify(parsed.languages), quality.quality_score, JSON.stringify(quality.missing_fields),
+           JSON.stringify(parsed.languages), quality.quality_score, quality.missing_fields,
            industryResult.industry, regionResult, candidateId]
         )
         await pool.query(
@@ -325,10 +334,18 @@ async function autoSyncCloudinary() {
   }
 }
 
-// Start auto-sync polling
-setInterval(autoSyncCloudinary, AUTO_SYNC_INTERVAL_MS)
-// Run first check after 30 seconds
-setTimeout(autoSyncCloudinary, 30_000)
+// Start auto-sync polling on long-running processes only. Serverless instances
+// (Vercel) are frozen after each response, which leaves candidates stuck in
+// 'processing' with Cloudinary/DB timeouts. Ingestion there must go through
+// the queue worker instead.
+const autoSyncEnabled = !process.env.VERCEL && process.env.ENABLE_CLOUDINARY_AUTOSYNC !== 'false'
+if (autoSyncEnabled) {
+  setInterval(autoSyncCloudinary, AUTO_SYNC_INTERVAL_MS)
+  // Run first check after 30 seconds
+  setTimeout(autoSyncCloudinary, 30_000)
+} else {
+  console.log('[AutoSync] Disabled (serverless runtime or ENABLE_CLOUDINARY_AUTOSYNC=false)')
+}
 
 // ─── 404 Handler ─────────────────────────────────────────────
 

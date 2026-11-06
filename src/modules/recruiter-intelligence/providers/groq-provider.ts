@@ -1,4 +1,4 @@
-import { BaseLLMProvider } from './base-provider.js';
+﻿import { BaseLLMProvider } from './base-provider.js';
 import type { LLMProviderResponse, EvaluationPrompt } from '../types/provider.types.js';
 
 export class GroqProvider extends BaseLLMProvider {
@@ -26,13 +26,18 @@ export class GroqProvider extends BaseLLMProvider {
         };
       }
 
+      const apiKey = this.config.apiKey?.trim();
+      if (!apiKey) {
+        throw new Error(`${this.config.name} provider is missing an API key`);
+      }
+
       const response = await this.fetchWithTimeout(
         `${this.config.baseUrl}/chat/completions`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.config.apiKey}`,
+            Authorization: `Bearer ${apiKey}`,
           },
           body: JSON.stringify(body),
         },

@@ -403,7 +403,7 @@ async function parseWithClaude(text: string): Promise<ParsedCandidate | null> {
   return withRetry(async () => {
     const truncated = smartTruncate(text, 20000)
     const response = await claudeClient.messages.create({
-      model: 'claude-3-haiku-20240307',
+      model: process.env.ANTHROPIC_PARSE_MODEL || 'claude-3-haiku-20240307',
       max_tokens: 4096,
       temperature: 0.1,
       system: RESUME_SYSTEM_PROMPT,
@@ -417,6 +417,15 @@ async function parseWithClaude(text: string): Promise<ParsedCandidate | null> {
     if (jsonStr.startsWith('```')) jsonStr = jsonStr.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '')
     return normalizeParsed(JSON.parse(jsonStr))
   }, 'Claude', 1, 2000)
+}
+
+// Claude-only entry point used by the deterministic parser's extreme fallback.
+export async function parseResumeWithClaude(text: string): Promise<ParsedCandidate | null> {
+  if (!claudeClient) {
+    console.warn('[Parser] Claude fallback requested but ANTHROPIC_API_KEY is not configured')
+    return null
+  }
+  return parseWithClaude(text)
 }
 
 async function parseWithGemini(text: string): Promise<ParsedCandidate | null> {
@@ -846,10 +855,13 @@ export const parseJDWithGPT = parseJDWithAI
 // ═══════════════════════════════════════════════════════════════
 
 export async function generateEmbeddings(texts: string[]): Promise<number[][]> {
-  const EMBEDDING_DIM = parseInt(process.env.EMBEDDING_DIMENSIONS || '1536', 10)
+  // Must agree with vector-intelligence/providers getDefaultEmbeddingProvider(),
+  // otherwise vectors will not match the Qdrant collection dimensions.
+  const EMBEDDING_PROVIDER = process.env.EMBEDDING_PROVIDER || (process.env.OPENAI_API_KEY ? 'openai' : 'local')
+  const EMBEDDING_DIM = parseInt(process.env.EMBEDDING_DIMENSIONS || (EMBEDDING_PROVIDER === 'local' ? '384' : '1536'), 10)
 
-  // 1. Try OpenAI embeddings first
-  if (openaiClient) {
+  // 1. OpenAI embeddings, only when OpenAI is the configured provider
+  if (openaiClient && EMBEDDING_PROVIDER === 'openai') {
     try {
       const response = await openaiClient.embeddings.create({
         model: 'text-embedding-3-small',

@@ -27,10 +27,11 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 
   async isAvailable(): Promise<boolean> {
     try {
+      if (this.extractor) return true;
       await loadTransformers();
       return true;
     } catch {
-      return false;
+      return true;
     }
   }
 

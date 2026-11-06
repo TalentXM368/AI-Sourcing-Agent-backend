@@ -183,12 +183,71 @@ model Candidate {
 
   embeddings        Embedding[]
   rankedCandidates  RankedCandidate[]
+  resumeParseRuns   ResumeParseRun[]
   aiEvaluations     AiEvaluation[]
   projectCandidates ProjectCandidate[]
   organization      Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
   @@unique([sourceFile])
   @@map("candidates")
+}
+
+model ResumeRecoveryBatch {
+  id                 String   @id @db.Uuid
+  stage              String
+  status             String
+  concurrency        Int
+  requestedBy        String?  @map("requested_by") @db.Uuid
+  reviewedBy         String?  @map("reviewed_by") @db.Uuid
+  reviewNotes        String?  @map("review_notes")
+  reviewedResumeIds  String[] @default([]) @map("reviewed_resume_ids") @db.Uuid
+  summary            Json     @default("{}")
+  startedAt          DateTime @default(now()) @map("started_at")
+  completedAt        DateTime? @map("completed_at")
+  reviewedAt         DateTime? @map("reviewed_at")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  runs ResumeParseRun[]
+
+  @@index([status, createdAt])
+  @@map("resume_recovery_batches")
+}
+
+model ResumeParseRun {
+  id                     String   @id @db.Uuid
+  batchId                String   @map("batch_id") @db.Uuid
+  resumeId               String   @map("resume_id") @db.Uuid
+  parserVersion          String   @map("parser_version")
+  fileHash               String?  @map("file_hash")
+  status                 String
+  extractionMethod       String?  @map("extraction_method")
+  llmCalls               Int      @default(0) @map("llm_calls")
+  qualityScore           Int?     @map("quality_score")
+  oldQualityScore        Int?     @map("old_quality_score")
+  oldProfile             Json     @default("{}") @map("old_profile")
+  newProfile             Json?    @map("new_profile")
+  comparison             Json     @default("{}")
+  provenance             Json     @default("[]")
+  errorCode              String?  @map("error_code")
+  errorMessage           String?  @map("error_message")
+  attemptCount           Int      @default(0) @map("attempt_count")
+  lastAttemptAt          DateTime? @map("last_attempt_at")
+  lastParserMethod       String?  @map("last_parser_method")
+  recommendedNextAction  String?  @map("recommended_next_action")
+  indexStatus            String   @default("not_eligible") @map("index_status")
+  startedAt              DateTime? @map("started_at")
+  completedAt            DateTime? @map("completed_at")
+  createdAt              DateTime @default(now()) @map("created_at")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  batch     ResumeRecoveryBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  candidate Candidate          @relation(fields: [resumeId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, resumeId])
+  @@index([batchId, status, createdAt])
+  @@index([resumeId, parserVersion, fileHash, status])
+  @@map("resume_parse_runs")
 }
 
 // ─── Jobs ─────────────────────────────────────────────────────
@@ -250,6 +309,24 @@ model Client {
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
   @@map("clients")
+}
+
+// ─── Documents (raw extracted text kept for replay/recovery) ──
+
+model Document {
+  id          String   @id
+  entityType  String   @map("entity_type")
+  entityId    String   @map("entity_id")
+  purpose     String
+  content     String?
+  contentHash String?  @map("content_hash")
+  mimeType    String?  @map("mime_type")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @default(now()) @map("updated_at")
+
+  @@unique([entityType, entityId, purpose])
+  @@index([entityId])
+  @@map("documents")
 }
 
 // ─── Embeddings ───────────────────────────────────────────────

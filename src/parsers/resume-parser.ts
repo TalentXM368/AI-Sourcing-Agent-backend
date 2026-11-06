@@ -1,35 +1,47 @@
 import type { ParsedCandidate, Skill, Company, Education, Project, WorkHistoryEntry, Certification, Language } from '../types.js'
-import { parseResumeWithGPT } from '../services/openai.js'
+import { parseResumeWithClaude } from '../services/openai.js'
 
-// ─── Main Parser (Hybrid: AI primary, regex fallback) ─────────
+// ─── Main Parser (Deterministic first; Claude only in extreme cases) ───
+// Policy: resumes are parsed without any LLM. Claude is called only when the
+// deterministic parse is unusable (no name, or no contact AND no profile
+// content). Set RESUME_LLM_FALLBACK=off to disable even that escalation.
+
+export function isExtremeParseFailure(r: ParsedCandidate): boolean {
+  const hasName = !!r.name && r.name !== 'Unknown' && r.name.trim().length >= 2
+  const hasContact = !!(r.email || r.phone || r.linkedin_url)
+  const hasContent = r.skills.length > 0 || r.work_history.length > 0 || r.education.length > 0
+  return !hasName || (!hasContact && !hasContent)
+}
 
 export async function parseResume(text: string): Promise<ParsedCandidate> {
-  try {
-    const aiResult = await parseResumeWithGPT(text)
-    console.log('[Parser] AI resume parsing succeeded')
+  const regexResult = parseResumeRegex(text)
+  regexResult.work_history = deduplicateWorkHistory(regexResult.work_history)
 
-    if (!isWeakResult(aiResult)) {
-      aiResult.work_history = deduplicateWorkHistory(aiResult.work_history)
-      aiResult.confidence = computeParseConfidence(aiResult, 'ai')
-      aiResult.parse_source = 'ai'
-      return aiResult
-    }
-
-    console.log('[Parser] AI result is weak, supplementing with regex')
-    const regexResult = parseResumeRegex(text)
-    const merged = mergeResults(regexResult, aiResult)
-    merged.work_history = deduplicateWorkHistory(merged.work_history)
-    merged.confidence = computeParseConfidence(merged, 'ai+regex')
-    merged.parse_source = 'ai+regex'
-    return merged
-  } catch (error) {
-    console.warn('[Parser] AI parsing failed, falling back to regex:', error)
-    const regexResult = parseResumeRegex(text)
-    regexResult.work_history = deduplicateWorkHistory(regexResult.work_history)
+  const llmFallbackEnabled = process.env.RESUME_LLM_FALLBACK !== 'off'
+  if (!isExtremeParseFailure(regexResult) || !llmFallbackEnabled) {
     regexResult.confidence = computeParseConfidence(regexResult, 'regex')
     regexResult.parse_source = 'regex'
     return regexResult
   }
+
+  console.log('[Parser] Deterministic parse unusable, escalating to Claude (extreme fallback)')
+  try {
+    const aiResult = await parseResumeWithClaude(text)
+    if (aiResult) {
+      const merged = mergeResults(regexResult, aiResult)
+      merged.work_history = deduplicateWorkHistory(merged.work_history)
+      merged.confidence = computeParseConfidence(merged, 'ai+regex')
+      merged.parse_source = 'ai+regex'
+      return merged
+    }
+    console.warn('[Parser] Claude returned no result; keeping deterministic parse')
+  } catch (error) {
+    console.warn('[Parser] Claude fallback failed; keeping deterministic parse:', error)
+  }
+
+  regexResult.confidence = computeParseConfidence(regexResult, 'regex')
+  regexResult.parse_source = 'regex'
+  return regexResult
 }
 
 // ─── Confidence Scoring ───────────────────────────────────────

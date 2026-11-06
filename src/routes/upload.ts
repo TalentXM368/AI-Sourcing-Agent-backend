@@ -204,8 +204,7 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
           text = await extractTextFromBuffer(pdfBuffer, mimetype)
         }
 
-        // ── FIELD PARSING: regex only ──
-        const parsed = parseResumeRegex(text)
+        const parsed = await parseResume(text)
 
         let candidateName = parsed.name
         if (!isValidPersonName(candidateName)) {
@@ -311,7 +310,11 @@ try {
 uploadRouter.post('/sync-cloudinary-full', async (req: Request, res: Response) => {
   try {
     const folder = req.body.folder || 'candidates/Resumes'
-    const batchSize = Math.min(req.body.batchSize || 10, 20) // max 20 concurrent
+    const requestedBatchSize = Number(req.body.batchSize)
+    // The shared PostgreSQL pool has five connections; reserve capacity for normal API traffic.
+    const batchSize = Number.isInteger(requestedBatchSize) && requestedBatchSize > 0
+      ? Math.min(requestedBatchSize, 3)
+      : 3
 
     // 1. Fetch ALL files from Cloudinary (auto-paginated)
     console.log(`[Sync Full] Fetching all files from Cloudinary: ${folder}`)
@@ -378,8 +381,8 @@ uploadRouter.post('/sync-cloudinary-full', async (req: Request, res: Response) =
 })
 
 // ─── Background Bulk Processor ─────────────────────────────────
-// Text extraction: pdftext (best quality) → fallback to mammoth
-// Field parsing: ALWAYS regex (parseResumeRegex) — no AI, no broken section pipeline
+// Text extraction: Document Intelligence → native extractor fallback
+// Field parsing: hybrid AI parser with regex fallback
 // Embeddings + Qdrant indexing happen after parse
 
 async function processBulkSync(
@@ -447,8 +450,7 @@ async function processBulkSync(
             return 'failed'
           }
 
-          // ── FIELD PARSING (regex only — no AI) ──
-          const parsed = parseResumeRegex(text)
+          const parsed = await parseResume(text)
 
           // ── NAME VALIDATION ──
           let candidateName = parsed.name
@@ -540,11 +542,14 @@ languages: JSON.stringify(parsed.languages),
 }
 
 // ─── Re-Process All Resumes with Fixed Parser ─────────────────
-// Re-parses raw_text with improved regex parser, re-extracts text for candidates missing it
+// Re-parses raw_text with the hybrid parser and re-extracts text when it is missing
 
 uploadRouter.post('/reprocess-all', async (req: Request, res: Response) => {
   try {
-    const batchSize = Math.min(req.body.batchSize || 10, 20)
+    const requestedBatchSize = Number(req.body.batchSize)
+    const batchSize = Number.isInteger(requestedBatchSize) && requestedBatchSize > 0
+      ? Math.min(requestedBatchSize, 3)
+      : 3
 
     // Find all resume candidates that need re-processing (skip completed)
     const candidates = await db.selectFrom('candidates')
@@ -604,7 +609,7 @@ async function reprocessAll(
     await Promise.allSettled(batch.map(async (c) => {
       try {
         const text = c.raw_text!
-        const parsed = parseResumeRegex(text)
+        const parsed = await parseResume(text)
 
         let candidateName = parsed.name
         if (!isValidPersonName(candidateName)) {
@@ -700,7 +705,7 @@ async function reprocessAll(
           continue
         }
 
-        const parsed = parseResumeRegex(text)
+        const parsed = await parseResume(text)
 
         let candidateName = parsed.name
         if (!isValidPersonName(candidateName)) {
