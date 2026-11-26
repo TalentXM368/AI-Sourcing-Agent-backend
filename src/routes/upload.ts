@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto'
 import { db } from '../db/index.js'
 import { pool } from '../db/index.js'
 import { extractTextFromBuffer, detectMimetype } from '../parsers/text-extractor.js'
-import { parseResume, parseResumeRegex } from '../parsers/resume-parser.js'
+import { parseResume, parseResumeRegex, toDocSections, type DocSection } from '../parsers/resume-parser.js'
 import { parseCSV, convertToJDs } from '../parsers/csv-parser.js'
 import { parseJobDescription } from '../parsers/jd-parser.js'
 import { generateEmbeddings } from '../services/openai.js'
@@ -16,6 +16,8 @@ import { extractWithDocumentIntelligence, checkDocumentIntelligenceHealth, ensur
 import { runFullCandidatePipeline } from '../services/candidate-pipeline.js'
 import { runFullJobPipeline } from '../services/jd-pipeline.js'
 import { indexCandidateToQdrant } from '../utils/qdrant-indexing.js'
+import { trustCheckSafely } from '../modules/candidate-trust/service.js'
+import { enrollCandidates, markCandidates } from '../modules/candidate-trust/repository.js'
 
 export const uploadRouter = Router()
 
@@ -190,11 +192,13 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
 
         // ── TEXT EXTRACTION: pdftext best, fallback to extraction ──
         let text = ''
+        let sections: DocSection[] = []
         if (diAvailable) {
           try {
             const diResult = await extractWithDocumentIntelligence(pdfBuffer, mimetype, file.public_id)
             if (diResult.text.length > 50) {
               text = diResult.text
+              sections = toDocSections(diResult.sections)
             }
           } catch (diErr) {
             console.warn(`[Sync] pdftext failed: ${diErr}`)
@@ -204,7 +208,7 @@ uploadRouter.post('/sync-cloudinary', async (req: Request, res: Response) => {
           text = await extractTextFromBuffer(pdfBuffer, mimetype)
         }
 
-        const parsed = await parseResume(text)
+        const parsed = await parseResume(text, sections)
 
         let candidateName = parsed.name
         if (!isValidPersonName(candidateName)) {
@@ -421,11 +425,13 @@ async function processBulkSync(
 
           // ── TEXT EXTRACTION (pdftext only — best quality) ──
           let text = ''
+          let sections: DocSection[] = []
           if (diAvailable) {
             try {
               const diResult = await extractWithDocumentIntelligence(pdfBuffer, mimetype, file.public_id)
               if (diResult.text.length > 50) {
                 text = diResult.text
+                sections = toDocSections(diResult.sections)
                 console.log(`[Sync Full] pdftext extracted: ${file.public_id} — ${text.length} chars`)
               } else {
                 console.log(`[Sync Full] pdftext insufficient for ${file.public_id} (${diResult.text.length} chars)`)
@@ -450,7 +456,7 @@ async function processBulkSync(
             return 'failed'
           }
 
-          const parsed = await parseResume(text)
+          const parsed = await parseResume(text, sections)
 
           // ── NAME VALIDATION ──
           let candidateName = parsed.name
@@ -684,11 +690,13 @@ async function reprocessAll(
         const mimetype = detectMimetype(c.resume_url)
 
         let text = ''
+        let sections: DocSection[] = []
         if (diAvailable) {
           try {
             const diResult = await extractWithDocumentIntelligence(pdfBuffer, mimetype, c.resume_url)
             if (diResult.text.length > 50) {
               text = diResult.text
+              sections = toDocSections(diResult.sections)
             }
           } catch {}
         }
@@ -705,7 +713,7 @@ async function reprocessAll(
           continue
         }
 
-        const parsed = await parseResume(text)
+        const parsed = await parseResume(text, sections)
 
         let candidateName = parsed.name
         if (!isValidPersonName(candidateName)) {
@@ -890,7 +898,11 @@ uploadRouter.get('/cloudinary-files', async (req: Request, res: Response) => {
 
 uploadRouter.post('/resumes', async (req: Request, res: Response) => {
   try {
-    const { files } = req.body as { files: Array<{ name: string, buffer: string, mimetype: string }> }
+    // trust_check: uploaded from the Trust Check section. Those resumes are checked after parsing,
+    // and are never deleted as duplicates (a re-used email is exactly what the check looks for).
+    const { files, trust_check } = req.body as { files: Array<{ name: string, buffer: string, mimetype: string }>, trust_check?: boolean }
+    const trustCheck = trust_check === true
+    console.log(`[Upload] ${Array.isArray(files) ? files.length : 0} file(s) received${trustCheck ? ' for Trust Check' : ''}`)
 
     if (!files || !Array.isArray(files) || files.length === 0) {
       return res.status(400).json({ error: 'No files provided' })
@@ -898,7 +910,7 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
 
     // Check for existing candidates by filename for dedup
     const existingCandidates = await db.selectFrom('candidates')
-      .select(['name', 'source_file', 'email'])
+      .select(['id', 'name', 'source_file', 'email'])
       .where('created_by_id', '=', req.auth!.id)
       .execute()
     const existingFiles = new Set(existingCandidates.map(c => c.source_file?.toLowerCase().trim()).filter(Boolean))
@@ -906,9 +918,26 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
     // Filter out duplicates and create placeholder candidates IMMEDIATELY
     const filesToProcess: Array<{ candidateId: string, name: string, buffer: string, mimetype: string }> = []
     let skipped = 0
+    const alreadyUploadedIds: string[] = []
 
     for (const file of files) {
       if (existingFiles.has(file.name.toLowerCase().trim())) {
+        const existing = trustCheck
+          ? existingCandidates.find(c => c.source_file?.toLowerCase().trim() === file.name.toLowerCase().trim())
+          : undefined
+        if (existing) {
+          // Trust Check: read the file that was just uploaded into the existing record,
+          // instead of checking whatever an older (possibly badly parsed) upload left there.
+          console.log(`[Upload] Re-reading existing file for Trust Check: ${file.name}`)
+          await db.updateTable('candidates')
+            .set({ parse_status: 'processing', parse_error: null, updated_at: new Date() })
+            .where('id', '=', existing.id)
+            .execute()
+          await pool.query(`UPDATE trust_candidates SET status = 'pending', updated_at = NOW() WHERE candidate_id = $1`, [existing.id]).catch(() => {})
+          filesToProcess.push({ candidateId: existing.id, name: file.name, buffer: file.buffer, mimetype: file.mimetype })
+          alreadyUploadedIds.push(existing.id)
+          continue
+        }
         console.log(`[Upload] Skipping duplicate file: ${file.name}`)
         skipped++
         continue
@@ -932,12 +961,18 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
     }
 
     // Respond IMMEDIATELY — don't wait for processing
-    const candidateIds = filesToProcess.map(f => f.candidateId)
-    res.json({ uploaded: filesToProcess.length, failed: 0, skipped, errors: [], processing: filesToProcess.length > 0, candidateIds })
+    const candidateIds = filesToProcess.filter(f => !alreadyUploadedIds.includes(f.candidateId)).map(f => f.candidateId)
+    if (trustCheck) {
+      // Show new uploads in the Trust Check queue right away (as 'pending' until parsed),
+      // and check files that were uploaded before using their existing record.
+      // Show uploads in the Trust Check queue right away; each is checked once it has been read.
+      try { await enrollCandidates(pool, [...candidateIds, ...alreadyUploadedIds], 'upload', req.auth!.id) } catch (e) { console.error('[Upload] trust enroll failed:', String(e)) }
+    }
+    res.json({ uploaded: filesToProcess.length, failed: 0, skipped, errors: [], processing: filesToProcess.length > 0, candidateIds, existingCandidateIds: alreadyUploadedIds })
 
     // Process files in background (fire and forget)
     if (filesToProcess.length > 0) {
-      processFilesInBackground(filesToProcess, existingCandidates)
+      processFilesInBackground(filesToProcess, existingCandidates, { trustCheck, userId: req.auth!.id })
     }
   } catch (error) {
     res.status(500).json({ error: String(error) })
@@ -949,6 +984,7 @@ uploadRouter.post('/resumes', async (req: Request, res: Response) => {
 async function processFilesInBackground(
   files: Array<{ candidateId: string, name: string, buffer: string, mimetype: string }>,
   existingCandidates: Array<{ name: string | null, source_file: string | null, email: string | null }>,
+  opts: { trustCheck?: boolean, userId?: string } = {},
 ) {
   const existingNames = new Set(existingCandidates.map(c => c.name?.toLowerCase().trim()).filter(Boolean))
   const existingEmails = new Set(existingCandidates.map(c => c.email?.toLowerCase().trim()).filter(Boolean))
@@ -973,11 +1009,13 @@ async function processFilesInBackground(
 
       // ── TEXT EXTRACTION: pdftext best, fallback to extraction ──
       let text = ''
+      let sections: DocSection[] = []
       if (diAvailable) {
         try {
           const diResult = await extractWithDocumentIntelligence(buffer, mimetype, fileName)
           if (diResult.text.length > 50) {
             text = diResult.text
+            sections = toDocSections(diResult.sections)
             console.log(`[Upload] pdftext extracted: ${fileName} — ${text.length} chars`)
           }
         } catch (diErr) {
@@ -989,7 +1027,7 @@ async function processFilesInBackground(
       }
 
       // ── FIELD PARSING: hybrid AI + regex ──
-      const parsed = await parseResume(text)
+      const parsed = await parseResume(text, sections)
 
       let candidateName = parsed.name
       if (!isValidPersonName(candidateName)) {
@@ -1055,6 +1093,11 @@ languages: JSON.stringify(parsed.languages),
          const { insertDocument } = await import('../db/documents.js')
          await insertDocument(candidateId, 'candidate', 'raw_text', text)
        } catch {}
+       // Also keep it on the candidate row, like the Cloudinary import does. The documents
+       // table is missing in some environments, which silently lost the text of UI uploads.
+       try {
+         await pool.query(`UPDATE candidates SET raw_text = $2 WHERE id = $1`, [candidateId, text])
+       } catch {}
 
        // Generate embeddings
       try {
@@ -1080,6 +1123,12 @@ await deleteEmbeddings(candidateId)
 
       console.log(`[Upload] ${candidateName} — q=${quality.quality_score} skills=${skillNames.length} work=${parsed.work_history.length} edu=${parsed.education.length}`)
 
+      if (opts.trustCheck) {
+        // Trust Check upload: keep the record even if it duplicates an existing one, and check it now.
+        await trustCheckSafely(pool, [candidateId], 'upload', opts.userId)
+        continue
+      }
+
       // Post-pipeline duplicate check
       try {
         const row = await pool.query(`SELECT email, name FROM candidates WHERE id = $1`, [candidateId])
@@ -1102,6 +1151,9 @@ await deleteEmbeddings(candidateId)
 
     } catch (error) {
       console.error(`[Upload] Failed to process ${fileName}: ${error}`)
+      if (opts.trustCheck) {
+        try { await markCandidates(pool, [candidateId], 'not_parsed') } catch {}
+      }
       try {
         await db.updateTable('candidates')
           .set({
@@ -1302,7 +1354,7 @@ uploadRouter.post('/reparse-bad-names', async (_req: Request, res: Response) => 
           const nameFromFilename = extractNameFromFilename(candidate.source_file)
           if (nameFromFilename) {
             await db.updateTable('candidates')
-              .set({ name: nameFromFilename, parse_status: 'completed', parse_error: `Text extraction failed: ${String(extractError)}`, updated_at: new Date() })
+              .set({ name: nameFromFilename, parse_status: 'failed', parse_error: `Text extraction failed: ${String(extractError)}`, updated_at: new Date() })
               .where('id', '=', candidate.id)
               .execute()
             results.push({ id: candidate.id, oldName: candidate.name, newName: nameFromFilename, success: true })

@@ -33,6 +33,7 @@ import { getBenchmarkRouter } from './modules/benchmark/factory.js'
 import { gmailIngestionCronRouter } from './routes/gmail-ingestion-cron.js'
 import { createProcessingRouter } from './routes/processing.js'
 import { createAIEvaluationRouter } from './routes/ai-evaluation.js'
+import { trustRouter } from './modules/candidate-trust/routes.js'
 import { loadMatchingModeFromDB } from './services/pipeline-toggle.js'
 import { authRouter } from './routes/auth.js'
 import { accountRouter } from './routes/account.js'
@@ -92,6 +93,7 @@ app.use('/api/outreach', outreachRouter)
 app.use('/api', advancedSearchRouter)
 app.use('/api/candidates', resumeSearchRouter)
 app.use('/api/pipeline', pipelineRouter)
+app.use('/api/trust', trustRouter)
 
 // ─── Candidate Intelligence Layer ────────────────────────────
 app.use('/api/intelligence', intelligenceRouter)

@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express'
 import { pool } from '../db/index.js'
 import { z } from 'zod'
+import { trustCheckSafely } from '../modules/candidate-trust/service.js'
 
 export const projectsRouter = Router()
 
@@ -205,7 +206,10 @@ projectsRouter.post('/projects/:id/candidates', async (req: Request, res: Respon
       }
     }
 
-    res.json({ added: added.length, skipped: skipped.length, added_ids: added, skipped_ids: skipped })
+    // Saved candidates get a Fake Candidate / Resume check (never blocks the save).
+    const trust = await trustCheckSafely(pool, added, 'saved', req.auth?.id)
+
+    res.json({ added: added.length, skipped: skipped.length, added_ids: added, skipped_ids: skipped, trust_check: trust })
   } catch (error) {
     if (error instanceof z.ZodError) {
       res.status(400).json({ error: 'Validation failed', details: error.errors })
@@ -346,7 +350,7 @@ projectsRouter.post('/projects/:id/candidates/bulk', async (req: Request, res: R
       return
     }
 
-    let added = 0
+    const addedIds: string[] = []
     for (const cid of candidate_ids) {
       const r = await pool.query(
         `INSERT INTO project_candidates (id, project_id, candidate_id, stage, added_from, created_at, updated_at)
@@ -354,10 +358,12 @@ projectsRouter.post('/projects/:id/candidates/bulk', async (req: Request, res: R
          ON CONFLICT (project_id, candidate_id) DO NOTHING RETURNING id`,
         [id, cid, added_from || null]
       )
-      if (r.rows.length > 0) added++
+      if (r.rows.length > 0) addedIds.push(cid)
     }
 
-    res.json({ added, total: candidate_ids.length })
+    const trust = await trustCheckSafely(pool, addedIds, 'saved', req.auth?.id)
+
+    res.json({ added: addedIds.length, total: candidate_ids.length, trust_check: trust })
   } catch (error) {
     console.error('Failed to bulk add candidates:', error)
     res.status(500).json({ error: 'Failed to add candidates' })
