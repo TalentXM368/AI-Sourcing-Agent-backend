@@ -27,3 +27,7 @@ npm-debug.log*
 tmp/
 uploads/
 eng.traineddata
+
+# Local data backups (contain personal data)
+backups/
+logs/

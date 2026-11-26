@@ -1,5 +1,37 @@
 import type { ParsedCandidate, Skill, Company, Education, Project, WorkHistoryEntry, Certification, Language } from '../types.js'
 import { parseResumeWithClaude } from '../services/openai.js'
+import { parseResumeDeterministic, type DocSection } from './deterministic-resume-parser.js'
+
+/** Convert document-intelligence sections to the parser's section shape. */
+function toDocSections(sections: Array<{ name: string; content: string; level?: number | null }> | undefined): DocSection[] {
+  return (sections || []).map(s => ({ name: s.name, content: s.content, level: s.level ?? undefined }))
+}
+
+/** Keep every field the primary parse found; take the secondary's value only where the primary is empty. */
+function fillGaps(primary: ParsedCandidate, secondary: ParsedCandidate): ParsedCandidate {
+  const usable = (v: string | undefined) => Boolean(v && v.trim() && v.trim().toLowerCase() !== 'unknown')
+  const pick = <T>(a: T[], b: T[]) => (a.length > 0 ? a : b)
+  return {
+    ...primary,
+    name: usable(primary.name) ? primary.name : secondary.name,
+    email: primary.email || secondary.email,
+    phone: primary.phone || secondary.phone,
+    linkedin_url: primary.linkedin_url || secondary.linkedin_url,
+    github_url: primary.github_url || secondary.github_url,
+    portfolio_url: primary.portfolio_url || secondary.portfolio_url,
+    headline: primary.headline || secondary.headline,
+    location: primary.location || secondary.location,
+    summary: primary.summary || secondary.summary,
+    experience_years: primary.experience_years || secondary.experience_years,
+    skills: pick(primary.skills, secondary.skills),
+    companies: pick(primary.companies, secondary.companies),
+    work_history: pick(primary.work_history, deduplicateWorkHistory(secondary.work_history)),
+    education: pick(primary.education, secondary.education),
+    projects: pick(primary.projects, secondary.projects),
+    certifications: pick(primary.certifications, secondary.certifications),
+    languages: pick(primary.languages, secondary.languages),
+  }
+}
 
 // ─── Main Parser (Deterministic first; Claude only in extreme cases) ───
 // Policy: resumes are parsed without any LLM. Claude is called only when the
@@ -13,8 +45,22 @@ export function isExtremeParseFailure(r: ParsedCandidate): boolean {
   return !hasName || (!hasContact && !hasContent)
 }
 
-export async function parseResume(text: string): Promise<ParsedCandidate> {
-  const regexResult = parseResumeRegex(text)
+export { toDocSections }
+export type { DocSection }
+
+/**
+ * Deterministic parse with no LLM: the section-aware v2 engine, with the legacy
+ * flat-text engine filling only the fields v2 left empty.
+ */
+export function parseResumeOffline(text: string, docSections?: DocSection[]): ParsedCandidate {
+  const primary = parseResumeDeterministic(text, docSections)
+  primary.work_history = deduplicateWorkHistory(primary.work_history)
+  if (!isExtremeParseFailure(primary) && primary.email && primary.phone) return primary
+  return fillGaps(primary, parseResumeRegex(text))
+}
+
+export async function parseResume(text: string, docSections?: DocSection[]): Promise<ParsedCandidate> {
+  const regexResult = parseResumeOffline(text, docSections)
   regexResult.work_history = deduplicateWorkHistory(regexResult.work_history)
 
   const llmFallbackEnabled = process.env.RESUME_LLM_FALLBACK !== 'off'

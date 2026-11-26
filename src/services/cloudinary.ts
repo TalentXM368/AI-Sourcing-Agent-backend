@@ -5,11 +5,36 @@ export { cloudinary }
 
 // ─── Configure Cloudinary ─────────────────────────────────────
 
+// Primary account: new uploads, listing and autosync.
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET,
 })
+
+// ─── Read-only accounts for downloading existing files ────────
+// Resumes stored before the account switch live in another Cloudinary account
+// (CLOUDINARY_LEGACY_*). Downloads pick credentials by the cloud name in the file URL,
+// so re-parsing reads old files while new uploads keep using the primary account.
+
+interface CloudinaryCredentials { cloud_name: string; api_key: string; api_secret: string }
+
+function credentialsFromEnv(prefix: string): CloudinaryCredentials | undefined {
+  const cloud_name = process.env[`${prefix}_CLOUD_NAME`]
+  const api_key = process.env[`${prefix}_API_KEY`]
+  const api_secret = process.env[`${prefix}_API_SECRET`]
+  return cloud_name && api_key && api_secret ? { cloud_name, api_key, api_secret } : undefined
+}
+
+export function cloudNameFromUrl(url: string): string | undefined {
+  return url.match(/^https:\/\/res\.cloudinary\.com\/([^/]+)\//)?.[1]
+}
+
+export function credentialsForCloud(cloudName: string | undefined): CloudinaryCredentials | undefined {
+  if (!cloudName) return undefined
+  return [credentialsFromEnv('CLOUDINARY'), credentialsFromEnv('CLOUDINARY_LEGACY')]
+    .find(c => c?.cloud_name === cloudName)
+}
 
 // ─── List PDFs/DOCXs in a Folder ──────────────────────────────
 
@@ -145,12 +170,13 @@ async function downloadBuffer(url: string, timeoutMs: number): Promise<Buffer> {
   }
 }
 
-async function downloadFromArchive(publicId: string): Promise<Buffer> {
+async function downloadFromArchive(publicId: string, credentials?: CloudinaryCredentials): Promise<Buffer> {
   const archiveUrl = cloudinary.utils.download_archive_url({
     resource_type: 'raw',
     type: 'upload',
     public_ids: [publicId],
     expires_at: Math.floor(Date.now() / 1000) + 3600,
+    ...(credentials || {}),
   })
   const zipBuffer = await downloadBuffer(archiveUrl, 60_000)
   const entries = new AdmZip(zipBuffer).getEntries().filter(entry => !entry.isDirectory)
@@ -183,9 +209,18 @@ export async function fetchFromCloudinary(url: string, publicId?: string): Promi
       throw directError
     }
 
+    const cloudName = cloudNameFromUrl(url)
+    const credentials = credentialsForCloud(cloudName)
+    if (cloudName && !credentials) {
+      throw new Error(
+        `Cloudinary direct download failed (${directError instanceof Error ? directError.message : String(directError)}); `
+        + `no API credentials configured for account "${cloudName}" (set CLOUDINARY_LEGACY_CLOUD_NAME/API_KEY/API_SECRET)`,
+      )
+    }
+
     console.warn('[Cloudinary] Direct file download failed; retrying with a single-file archive')
     try {
-      return await downloadFromArchive(publicId)
+      return await downloadFromArchive(publicId, credentials)
     } catch (archiveError) {
       const directMessage = directError instanceof Error ? directError.message : String(directError)
       const archiveMessage = archiveError instanceof Error ? archiveError.message : String(archiveError)

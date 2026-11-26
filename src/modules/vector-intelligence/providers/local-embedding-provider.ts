@@ -3,6 +3,7 @@ import type { EmbeddingProviderConfig } from '../types/index.js';
 
 let pipeline: any = null;
 let env: any = null;
+const SHARED_EXTRACTORS = new Map<string, Promise<any>>();
 
 async function loadTransformers() {
   if (pipeline) return;
@@ -37,10 +38,21 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
 
   private async getExtractor() {
     if (this.extractor) return this.extractor;
-    await loadTransformers();
-    console.log(`[LocalEmbedding] Loading model: ${this.model} (first run downloads ~23MB)`);
-    this.extractor = await pipeline('feature-extraction', this.model);
-    console.log('[LocalEmbedding] Model loaded successfully');
+    // One loaded model per process: callers create a new provider per request, and loading the
+    // ONNX model each time exhausted memory during bulk imports ("bad allocation").
+    let shared = SHARED_EXTRACTORS.get(this.model);
+    if (!shared) {
+      shared = (async () => {
+        await loadTransformers();
+        console.log(`[LocalEmbedding] Loading model: ${this.model} (first run downloads ~23MB)`);
+        const extractor = await pipeline('feature-extraction', this.model);
+        console.log('[LocalEmbedding] Model loaded successfully');
+        return extractor;
+      })();
+      SHARED_EXTRACTORS.set(this.model, shared);
+      shared.catch(() => SHARED_EXTRACTORS.delete(this.model));
+    }
+    this.extractor = await shared;
     return this.extractor;
   }
 

@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from 'crypto'
 import { pool } from '../db/index.js'
 import { detectMimetype, extractTextFromBuffer, extractTextFromDocx, extractTextFromPdf } from '../parsers/text-extractor.js'
-import { PARSER_VERSION } from '../modules/candidate-intelligence/constants/index.js'
-import { runPipeline } from '../modules/candidate-intelligence/pipeline.js'
+import { isExtremeParseFailure, parseResumeOffline } from '../parsers/resume-parser.js'
+import { DETERMINISTIC_PARSER_VERSION, isPlaceName, looksLikePersonName } from '../parsers/deterministic-resume-parser.js'
 import type { StructuredDocument } from '../modules/candidate-intelligence/types/input.types.js'
 import type { CandidateProfile } from '../modules/candidate-intelligence/types/profile.types.js'
 import type { ParsedCandidate } from '../types.js'
 import { computeDataQuality } from '../scoring/data-quality.js'
 import { checkDocumentIntelligenceHealth, extractWithDocumentIntelligence } from './document-intelligence.js'
 import { fetchFromCloudinary } from './cloudinary.js'
+import { readLocalResume } from './local-resume-store.js'
 import { generateEmbeddings } from './openai.js'
 import { VECTOR_CONSTANTS } from '../modules/vector-intelligence/constants/index.js'
 import { QdrantManager } from '../modules/vector-intelligence/qdrant/qdrant-manager.js'
@@ -27,7 +28,7 @@ export const RECOVERY_QUALITY_THRESHOLDS = {
   lowQuality: Number(process.env.RESUME_RECOVERY_LOW_QUALITY_SCORE || 40),
 }
 
-const RECOVERY_PARSER_VERSION = `candidate-intelligence-${PARSER_VERSION}`
+const RECOVERY_PARSER_VERSION = DETERMINISTIC_PARSER_VERSION
 const MAX_RECOVERY_CONCURRENCY = 5
 const RETRY_LIMIT = 3
 
@@ -85,7 +86,7 @@ if (
 }
 
 function backlogPredicate(alias = 'c'): string {
-  return `(
+  return `((
     LOWER(COALESCE(${alias}.parse_status, '')) NOT IN ('completed', 'success')
     OR COALESCE(${alias}.data_quality_score, 0) < ${RECOVERY_QUALITY_THRESHOLDS.success}
     OR (
@@ -98,6 +99,13 @@ function backlogPredicate(alias = 'c'): string {
       AND COALESCE(jsonb_array_length(CASE WHEN jsonb_typeof(${alias}.education) = 'array' THEN ${alias}.education ELSE '[]'::jsonb END), 0) = 0
     )
   )
+  OR EXISTS (
+    -- profiles written by an older recovery parser version are refreshed by the current one
+    SELECT 1 FROM resume_parse_runs older
+    WHERE older.resume_id = ${alias}.id
+      AND older.status IN ('success', 'partial')
+      AND older.parser_version <> '${RECOVERY_PARSER_VERSION.replace(/'/g, "''")}'
+  ))
   AND NOT EXISTS (
     SELECT 1 FROM resume_parse_runs prior
     WHERE prior.resume_id = ${alias}.id
@@ -206,7 +214,9 @@ async function getNextRecoveryStage(latest?: RecoveryBatch): Promise<RecoverySta
   if (!previous) return '20'
   if (previous.status === 'running' || previous.status === 'review_required') return null
   if (previous.status === 'failed') return previous.stage
-  if (previous.status === 'completed') return null
+  // After a full pass, allow another 'remaining' pass for whatever is still in the backlog
+  // (e.g. files that could not be downloaded before credentials were configured).
+  if (previous.status === 'completed') return 'remaining'
   if (previous.status === 'approved') {
     const next = RECOVERY_STAGES[RECOVERY_STAGES.indexOf(previous.stage) + 1]
     return next || null
@@ -242,7 +252,13 @@ export async function startRecoveryBatch(
             c.data_quality_score, c.created_at, c.updated_at
      FROM candidates c
      WHERE ${RESUME_SCOPE} AND ${predicate}
-     ORDER BY c.created_at ASC
+     ORDER BY
+       -- Resumes that can be processed without a protected PDF download go first:
+       -- stored extracted text, then Word files, then PDFs.
+       CASE WHEN COALESCE(c.raw_text, '') <> '' THEN 0
+            WHEN LOWER(COALESCE(c.resume_url, c.source_file, '')) ~ '\\.docx?$' THEN 1
+            ELSE 2 END,
+       c.created_at ASC
      LIMIT $1`,
     [stage === 'remaining' ? 100000 : Number(stage)]
   )
@@ -263,23 +279,24 @@ export async function startRecoveryBatch(
       [batchId, stage, concurrency, requestedBy, JSON.stringify({ total: candidates.length, queued: candidates.length })]
     )
 
-    for (const candidate of candidates) {
-      const oldProfile = await client.query(
-        `SELECT name, email, phone, linkedin_url, github_url, portfolio_url, headline, location, summary,
-                experience_years, skills, companies, work_history, education, projects, certifications,
-                languages, data_quality_score, parse_status, parse_error, source_file, resume_url
-         FROM candidates WHERE id = $1`,
-        [candidate.id]
-      )
+    // One set-based insert (a per-row loop over a remote database took tens of minutes for
+    // large stages and could be cut off mid-transaction). Snapshots the same profile fields.
+    for (let i = 0; i < candidates.length; i += 1000) {
       await client.query(
         `INSERT INTO resume_parse_runs
            (id, batch_id, resume_id, parser_version, status, old_quality_score, old_profile)
-         VALUES ($1, $2, $3, $4, 'queued', $5, $6::jsonb)`,
-        [
-          randomUUID(), batchId, candidate.id, RECOVERY_PARSER_VERSION,
-          oldProfile.rows[0]?.data_quality_score ?? null,
-          JSON.stringify(oldProfile.rows[0] || {}),
-        ]
+         SELECT gen_random_uuid(), $1, c.id, $2, 'queued', c.data_quality_score,
+                jsonb_build_object(
+                  'name', c.name, 'email', c.email, 'phone', c.phone, 'linkedin_url', c.linkedin_url,
+                  'github_url', c.github_url, 'portfolio_url', c.portfolio_url, 'headline', c.headline,
+                  'location', c.location, 'summary', c.summary, 'experience_years', c.experience_years,
+                  'skills', c.skills, 'companies', c.companies, 'work_history', c.work_history,
+                  'education', c.education, 'projects', c.projects, 'certifications', c.certifications,
+                  'languages', c.languages, 'data_quality_score', c.data_quality_score,
+                  'parse_status', c.parse_status, 'parse_error', c.parse_error,
+                  'source_file', c.source_file, 'resume_url', c.resume_url)
+         FROM candidates c WHERE c.id = ANY($3::uuid[])`,
+        [batchId, RECOVERY_PARSER_VERSION, candidates.slice(i, i + 1000).map(c => c.id)]
       )
     }
     await client.query('COMMIT')
@@ -541,12 +558,15 @@ function isTransientError(error: unknown): boolean {
 }
 
 async function processRecoveryRunOnce(run: RecoveryRun): Promise<void> {
+  // The documents table is optional: fall back to candidates.raw_text when it has not been migrated.
   const { rows } = await pool.query(
-    `SELECT c.*, d.content AS stored_raw_text
-     FROM candidates c
-     LEFT JOIN documents d
-       ON d.entity_id = c.id AND d.entity_type = 'candidate' AND d.purpose = 'raw_text'
-     WHERE c.id = $1`,
+    await documentsTableExists()
+      ? `SELECT c.*, COALESCE(d.content, NULLIF(c.raw_text, '')) AS stored_raw_text
+         FROM candidates c
+         LEFT JOIN documents d
+           ON d.entity_id = c.id AND d.entity_type = 'candidate' AND d.purpose = 'raw_text'
+         WHERE c.id = $1`
+      : `SELECT c.*, NULLIF(c.raw_text, '') AS stored_raw_text FROM candidates c WHERE c.id = $1`,
     [run.resume_id]
   )
   const candidate = rows[0]
@@ -576,27 +596,16 @@ async function processRecoveryRunOnce(run: RecoveryRun): Promise<void> {
     return
   }
 
-  const document: StructuredDocument = {
-    markdown: extraction.sections.map(section => `## ${section.name}\n${section.content}`).join('\n\n') || extraction.text,
-    plainText: extraction.text,
-    sections: extraction.sections.length
-      ? extraction.sections
-      : [{ name: 'Resume', content: extraction.text, pageNumber: 1 }],
-    tables: extraction.tables,
-    images: extraction.images,
-    metadata: {
-      pages: extraction.pages,
-      fileName: extraction.filename,
-      fileSize: extraction.fileSize,
-      mimeType: extraction.mimeType,
-    },
+  // Same deterministic parser as live uploads; no LLM is called during recovery.
+  const parsed: ParsedCandidate = {
+    ...parseResumeOffline(extraction.text, extraction.sections),
+    resume_url: candidate.resume_url || candidate.source_file || undefined,
   }
-  const profile = await runPipeline(document)
-  const parsed = toParsedCandidate(profile, candidate.resume_url || candidate.source_file)
+  parsed.parse_source = 'regex'
   const quality = computeDataQuality(parsed)
   const status = classifyRecoveryQuality(
     quality.quality_score,
-    profile.validation.isValid,
+    !isExtremeParseFailure(parsed),
     RECOVERY_QUALITY_THRESHOLDS,
   )
   const oldProfile = snapshotProfile(candidate)
@@ -634,7 +643,7 @@ async function processRecoveryRunOnce(run: RecoveryRun): Promise<void> {
     [
       run.id, clearlyWorse ? 'low_quality' : status, extraction.fileHash, extraction.method,
       quality.quality_score, JSON.stringify(newProfile), JSON.stringify(comparison),
-      JSON.stringify(collectProvenance(profile)), RECOVERY_PARSER_VERSION,
+      JSON.stringify(collectProvenance(parsed, extraction.method)), RECOVERY_PARSER_VERSION,
       clearlyWorse
         ? 'Keep the existing profile; review the field comparison before a future parser attempt'
         : identityDuplicates.length
@@ -657,7 +666,14 @@ async function extractResume(candidate: Record<string, any>): Promise<Extraction
   let bytes: Buffer | null = null
   const sourceUrl = candidate.resume_url || (isHttpUrl(candidate.source_file) ? candidate.source_file : null)
 
-  if (sourceUrl) {
+  // A local copy of the original file (RESUME_LOCAL_DIR) beats both Cloudinary and stored text
+  const local = readLocalResume(sourceUrl || candidate.source_file || '')
+  if (local) {
+    bytes = local.bytes
+    filename = local.path
+  }
+
+  if (sourceUrl && !bytes) {
     if (!isTrustedCloudinaryUrl(sourceUrl)) {
       if (!candidate.stored_raw_text) {
         throw Object.assign(new Error('Resume source URL is not a trusted Cloudinary asset URL'), {
@@ -750,6 +766,7 @@ async function extractResume(candidate: Record<string, any>): Promise<Extraction
     throw Object.assign(new Error(`Extracted text is too short (${text.trim().length} characters)`), { code: 'EXTRACTION_FAILED' })
   }
 
+  if (local) method = `local-file+${method}`
   return { text, method, fileHash, filename, fileSize, mimeType, sections, tables, images, pages }
 }
 
@@ -848,7 +865,7 @@ function sourceValue(value: unknown): string | undefined {
   return undefined
 }
 
-function toParsedCandidate(profile: CandidateProfile, resumeUrl: string | null): ParsedCandidate {
+export function toParsedCandidate(profile: CandidateProfile, resumeUrl: string | null): ParsedCandidate {
   const experience = profile.experience.map(entry => ({
     title: sourceValue(entry.title) || '',
     company: sourceValue(entry.company) || '',
@@ -947,37 +964,26 @@ function parseArray(value: unknown): unknown[] {
   return []
 }
 
-function collectProvenance(profile: CandidateProfile) {
+function collectProvenance(parsed: ParsedCandidate, extractionMethod: string) {
   const evidence: Array<Record<string, unknown>> = []
   const add = (field: string, value: unknown) => {
-    if (value && typeof value === 'object' && 'value' in value) {
-      const source = value as { value: string; sourceSection?: string; extractor?: string; confidence?: { score?: number } }
-      if (source.value) evidence.push({
-        field,
-        value: source.value,
-        source: source.sourceSection || 'unknown',
-        page: null,
-        method: source.extractor || 'candidate-intelligence',
-        confidence: source.confidence?.score ?? null,
-      })
-    }
+    if (value === undefined || value === null || String(value).trim() === '' || value === 'Unknown') return
+    evidence.push({ field, value, source: extractionMethod, page: null, method: RECOVERY_PARSER_VERSION, confidence: null })
   }
-  add('name', profile.personal.name)
-  add('headline', profile.personal.headline)
-  for (const field of ['email', 'phone', 'linkedin', 'github', 'portfolio', 'city', 'state', 'country'] as const) {
-    add(field, profile.contact[field])
+  for (const field of ['name', 'headline', 'email', 'phone', 'linkedin_url', 'github_url', 'portfolio_url', 'location', 'experience_years'] as const) {
+    add(field, parsed[field])
   }
-  for (const skill of profile.skills) {
-    evidence.push({
-      field: 'skills',
-      value: skill.canonical,
-      source: 'resume skills extraction',
-      page: null,
-      method: skill.confidence.reasons.join(', ') || 'dictionary',
-      confidence: skill.confidence.score,
-    })
-  }
+  for (const skill of parsed.skills) add('skills', skill.name)
   return evidence
+}
+
+let documentsTableChecked: Promise<boolean> | null = null
+function documentsTableExists(): Promise<boolean> {
+  documentsTableChecked ??= pool
+    .query<{ present: boolean }>(`SELECT to_regclass('public.documents') IS NOT NULL AS present`)
+    .then(result => Boolean(result.rows[0]?.present))
+    .catch(() => false)
+  return documentsTableChecked
 }
 
 function fieldPresent(value: unknown): boolean {
@@ -996,13 +1002,26 @@ function mergeParsedWithOld(candidate: Record<string, any>, parsed: ParsedCandid
   for (const key of ['skills', 'companies', 'work_history', 'education', 'projects', 'certifications', 'languages'] as const) {
     if (!merged[key].length && parseArray(candidate[key]).length) merged[key] = parseArray(candidate[key]) as never
   }
-  if (!fieldPresent(merged.name) || merged.name === 'Unknown') {
-    if (fieldPresent(candidate.name)) merged.name = candidate.name
+  // Names: a re-parse only fills a missing or clearly broken name. An existing name that
+  // already reads as a person's name is never replaced (re-parsing once overwrote good
+  // names with headings such as "Perfil Profesional").
+  const oldName = fieldPresent(candidate.name) ? String(candidate.name) : ''
+  const tokens = (s: string) => s.toLowerCase().replace(/[^a-zà-ÿ\s]/g, ' ').split(/\s+/).filter(Boolean)
+  const extendsOld = (next: string) => {
+    const have = new Set(tokens(next))
+    return tokens(oldName).every(t => have.has(t))
+  }
+  if (looksLikePersonName(oldName)) {
+    // Keep the new spelling only when it is the same name re-cased or a fuller form of it
+    if (!(looksLikePersonName(merged.name) && extendsOld(merged.name))) merged.name = oldName
+  } else if (!looksLikePersonName(merged.name) && oldName) {
+    // Never replace one non-name with another; the old value is at least the known state
+    merged.name = oldName
   }
   return merged
 }
 
-async function persistCandidateProfile(
+export async function persistCandidateProfile(
   candidateId: string,
   parsed: ParsedCandidate,
   qualityScore: number,
@@ -1030,7 +1049,7 @@ async function persistCandidateProfile(
          work_history = $14::jsonb, education = $15::jsonb, projects = $16::jsonb,
          certifications = $17::jsonb, languages = $18::jsonb,
          data_quality_score = GREATEST(COALESCE(data_quality_score, 0), $19),
-         missing_fields = $20, parse_status = 'completed', parse_error = NULL, updated_at = NOW()
+         missing_fields = $20, raw_text = $21, parse_status = 'completed', parse_error = NULL, updated_at = NOW()
        WHERE id = $1`,
       [
         candidateId, merged.name, merged.email || null, merged.phone || null, merged.linkedin_url || null,
@@ -1038,10 +1057,10 @@ async function persistCandidateProfile(
         merged.summary || null, merged.experience_years || null, JSON.stringify(merged.skills),
         JSON.stringify(merged.companies), JSON.stringify(merged.work_history), JSON.stringify(merged.education),
         JSON.stringify(merged.projects), JSON.stringify(merged.certifications), JSON.stringify(merged.languages),
-        qualityScore, missingFields,
+        qualityScore, missingFields, rawText,
       ]
     )
-    await client.query(
+    if (await documentsTableExists()) await client.query(
       `INSERT INTO documents (id, entity_type, entity_id, purpose, content, mime_type, created_at, updated_at)
        VALUES ($1, 'candidate', $2, 'raw_text', $3, 'text/plain', NOW(), NOW())
        ON CONFLICT (entity_type, entity_id, purpose)
@@ -1065,7 +1084,7 @@ async function hasExistingEmbedding(candidateId: string): Promise<boolean> {
   return result.rows.length > 0
 }
 
-async function indexValidatedProfile(candidateId: string, profile: ParsedCandidate): Promise<void> {
+export async function indexValidatedProfile(candidateId: string, profile: ParsedCandidate): Promise<void> {
   const skills = profile.skills.map(skill => skill.name).filter(Boolean)
   const fullText = [
     profile.name, profile.headline, profile.location, profile.summary,

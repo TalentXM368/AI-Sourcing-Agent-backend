@@ -86,7 +86,7 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-function classifyByRules(text: string): { industry: Industry; confidence: number } {
+export function classifyByRules(text: string): { industry: Industry; confidence: number } {
   const lower = text.toLowerCase()
   const scores: Record<Industry, number> = {
     Technology: 0, Healthcare: 0, Finance: 0,
